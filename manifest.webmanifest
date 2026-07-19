@@ -1,0 +1,13 @@
+{
+  "name": "WICK — the last flame",
+  "short_name": "WICK",
+  "description": "One-thumb pixel-art climber. Leap candle to candle, outrun the rising dark.",
+  "start_url": ".",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#050409",
+  "theme_color": "#050409",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

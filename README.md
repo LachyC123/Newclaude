@@ -12,7 +12,10 @@ Everything is in one file: **[`index.html`](index.html)**. No build, no dependen
 - **Grab gold embers** mid-flight for fuel and sparks.
 - **Dodge cold drips** (watch the cyan shimmer) — they snuff flames, including you.
 - **Blue wisps** steal your fire… unless you're at full blaze, in which case *you eat them*.
+- **Cold draughts** (from ~90m) howl through the tower: shorter leaps, faster-melting wicks, every flame bent sideways. Hunker down or push through.
 - **Outrun the rising dark.** It never stops.
+
+The tower changes as you climb — cross into **the Bone Gallery** (100m), **the Rust Chapel** (200m) and **the Hollow** (300m).
 
 One resource rules everything: your flame. Big flame = more health, a wider light radius, and wisp-eating power — but every jump and every second burns it down.
 
@@ -38,3 +41,5 @@ open index.html
 ```
 
 Saved locally: best height, sound/FX settings, seen tutorials (`localStorage`).
+
+Installable as a PWA (manifest + icon included) when served over HTTPS — e.g. GitHub Pages.

@@ -26,14 +26,16 @@ tap candle → arc flight (grab embers) → landing ignition (flash/squash/chime
 | Wick burn | perch duration, candle death (gutter state), route pressure |
 | Heat (combo) | ember value ×combo, landing fuel bonus, light radius bonus, chime pitch |
 | The dark | pacing floor; accelerates with height; hurries when >300px behind |
-| Cold drips | hit flame (−26) OR snuff candles behind you (world interaction) |
-| Wisps | threat below 70 fuel, prey above — flips risk assessment mid-run |
+| Cold drips | hit flame (−26) OR snuff candles behind you (world interaction); drift downwind |
+| Wisps | threat below 70 fuel, prey above — flips risk assessment mid-run; drift downwind |
+| Draughts (90m+) | telegraphed wind bursts: reach ×0.8, wick burn ×1.8, +2/s drain, all flames lean, drips/wisps pushed — an economic pressure, never an instant kill |
 
 ## Difficulty curve
 
 - Rung gaps grow 30→56px with height; stub-candle (2s wick) chance 10%→45%.
-- Dark speed 7px/s + 0.09/m, cap 34px/s. Drips from 30m, wisps from 60m.
+- Dark speed 7px/s + 0.09/m, cap 34px/s. Drips from 30m, wisps from 60m, draughts from 90m.
 - Lantern rest stops every 11–15 rungs (safe, slow regen, no melt, no heat).
+- Biome shift every 100m (background palette + announcement bell): Tallow Cellars → Bone Gallery → Rust Chapel → Hollow.
 
 ## Art bible
 
@@ -60,9 +62,11 @@ tap candle → arc flight (grab embers) → landing ignition (flash/squash/chime
 
 ## Known weaknesses / next priorities
 
-1. **Balance is generous for expert play** — a perfect chainer stays near full fuel; drip/wisp density above 120m may need a third pressure (wind gusts that bend jump arcs).
-2. Wax-drip and snuffed-candle moments deserve unique audio signatures (currently shared hiss family).
-3. No PWA manifest yet (add for installable home-screen play).
-4. Single biome; a visual shift every 100m (color temperature of the stone, new silhouette props) would strengthen long-run curiosity.
+*(Second pass, 2026-07: added draughts as the late-game third pressure, biome shifts every 100m, distinct snuff/howl/bell audio, ember magnetism, zoom-punch on devour, always-on trail at ×10 heat, PWA manifest + icon; fixed dead-candle landings extending combos.)*
+
+1. **Balance still untested on real thumbs** — an optimal chainer holds full fuel; draughts pressure the wick/reach economy but drip density above 150m may need tuning up.
+2. Parallax silhouettes are shared across biomes — per-biome props (bones, rust chains, nothing at all in the Hollow) would deepen the shift.
+3. No offline service worker (manifest only); add one if the game gets a permanent host.
+4. Wisps above 250m could gain a second behaviour (slow homing) to keep the predator/prey flip tense.
 
 **Single highest-impact next step:** playtest on real phones and tune `K` (all tunables are one object at the top of `index.html`).
