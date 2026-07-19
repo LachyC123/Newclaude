@@ -7,6 +7,8 @@
 <meta name="theme-color" content="#050409">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="description" content="WICK — you are the last living flame. Leap candle to candle, outrun the rising dark. Your flame is your health, your light and your score.">
 <style>
   html, body {
@@ -72,7 +74,7 @@ var K = {
   darkMaxGap: 300,        // dark hurries if further than this
   darkHurry: 46,
   // spawns
-  rainFromM: 30, wispFromM: 60,
+  rainFromM: 30, wispFromM: 60, gustFromM: 90,
 };
 
 /* ---------- palette (the whole game lives here) ---------- */
@@ -89,6 +91,15 @@ var P = {
   darkTendril:'#1a1030', darkEdge:'#3a2b55',
   brass:'#c9973f', brassDk:'#7a5a26',
 };
+
+/* biomes: the tower changes as you climb */
+var BANDS = [
+  {at:0,   name:'',                 bg0:'#0b0a18', bg1:'#131126', bg2:'#1c1832'},
+  {at:100, name:'THE BONE GALLERY', bg0:'#0a0f12', bg1:'#101a1e', bg2:'#17262b'},
+  {at:200, name:'THE RUST CHAPEL',  bg0:'#120b0a', bg1:'#1d120e', bg2:'#291a12'},
+  {at:300, name:'THE HOLLOW',       bg0:'#070510', bg1:'#0d0918', bg2:'#150e24'},
+];
+function bandFor(h){ var b=0; for (var i=0;i<BANDS.length;i++) if (h>=BANDS[i].at) b=i; return b; }
 
 /* ---------- tiny 3x5 pixel font ---------- */
 var FONT = {
@@ -193,6 +204,9 @@ function sMile(){ tone(523,523,0.12,'sine',0.18); setTimeout(function(){tone(784
 function sDeath(){ tone(150,34,1.3,'sawtooth',0.3); hissS(1.1,900,90,0.4); }
 function sUI(){ tone(700,700,0.05,'square',0.09); }
 function sSnuff(){ hissS(0.25,3000,400,0.25); }
+function sSnuffCandle(){ tone(190,85,0.16,'triangle',0.16); hissS(0.12,1800,500,0.12); }
+function sHowl(){ hissS(1.5,240,760,0.16); tone(88,62,1.1,'sine',0.05); }
+function sBell(){ tone(392,392,0.7,'sine',0.16); setTimeout(function(){tone(588,588,0.9,'sine',0.1);},140); }
 function vib(p){ if (fxFull && navigator.vibrate) { try{ navigator.vibrate(p); }catch(e){} } }
 
 /* ---------- game state ---------- */
@@ -210,6 +224,7 @@ var camTop=0, darkY=0;
 var flame=null;
 var sparks=0, heightM=0, nextMile=25, runBestY=0;
 var spineX=80, lastGenY=0, rungCount=0, dropTimer=0, wispTimer=0;
+var gust={phase:'none', dir:1, t:0}, gustTimer=10, bandIdx=0, zoomP=0, GLEAN=0;
 var titleT=0, newBest=false;
 var hintQueue=[], hintT=0;
 
@@ -279,6 +294,7 @@ function reset(){
   sparks=0; heightM=0; nextMile=25; newBest=false;
   spineX=80; lastGenY=40; rungCount=0; dropTimer=0; wispTimer=0;
   trauma=0; flashA=0; freezeT=0; timeScale=1; slowT=0;
+  gust.phase='none'; gustTimer=rand(9,14); bandIdx=0; zoomP=0; GLEAN=0;
   var first = mkCandle(80, 40, 0);
   first.lit = true; first.burnMax = 8; first.burn = 8;
   candles.push(first);
@@ -321,9 +337,10 @@ function hitStop(t){ freezeT=Math.max(freezeT,t); }
 /* ---------- gameplay: jumping ---------- */
 function reachable(c){
   if (c.dead || (flame.on===c && flame.st==='perch')) return false;
+  var gf = gust.phase==='blow' ? 0.8 : 1;  // draughts shorten leaps
   var dx = c.x - flame.x, dy = candleTop(c) - flame.y;
-  var ry = dy < 0 ? K.reachUp : K.reachDown;
-  return (dx*dx)/(K.reachX*K.reachX) + (dy*dy)/(ry*ry) <= 1;
+  var rx = K.reachX*gf, ry = (dy < 0 ? K.reachUp : K.reachDown)*gf;
+  return (dx*dx)/(rx*rx) + (dy*dy)/(ry*ry) <= 1;
 }
 function tryJump(wx,wy){
   if (flame.st!=='perch') return;
@@ -356,11 +373,11 @@ function land(c){
   flame.st='perch'; flame.on=c;
   flame.x=c.x; flame.y=candleTop(c)-1;
   flame.sq=0.62; // squash
-  var wasChain = flame.sinceLand <= K.comboWindow && flame.combo>0;
-  flame.combo = wasChain ? flame.combo+1 : 1;
-  flame.sinceLand = 0;
-  if (c.dead){ flame.gutter=true; sSnuff(); }
+  if (c.dead){ flame.gutter=true; flame.sinceLand=0; sSnuff(); }
   else {
+    var wasChain = flame.sinceLand <= K.comboWindow && flame.combo>0;
+    flame.combo = wasChain ? flame.combo+1 : 1;
+    flame.sinceLand = 0;
     if (!c.lit){ c.lit=true; }
     flame.gutter=false;
     sLand(); vib(8);
@@ -389,7 +406,7 @@ function update(dt){
   // ---- flame ----
   if (state==='play'){
     flame.sinceLand += dt;
-    flame.fuel -= K.passiveDrain*dt;
+    flame.fuel -= (K.passiveDrain + (gust.phase==='blow'?2:0))*dt;
     if (flame.st==='perch'){
       var c = flame.on;
       if (c.dead || flame.gutter){
@@ -418,8 +435,8 @@ function update(dt){
       var py = u*u*flame.fy + 2*u*t*my + t*t*flame.ty;
       flame.look.x = px-flame.x; flame.look.y = py-flame.y;
       flame.x=px; flame.y=py;
-      // afterimage trail
-      if (Math.random()<dt*40)
+      // afterimage trail (always-on and denser at high heat)
+      if (Math.random()<dt*(flame.combo>=10?90:40))
         parts.push({x:flame.x,y:flame.y,vx:0,vy:0,life:0.28,t:0,c:P.fire2,sz:2,g:1,grav:0});
       if (t>=1) land(flame.target);
     }
@@ -443,6 +460,15 @@ function update(dt){
       popText(flame.x, flame.y-16, nextMile+'m!', P.text, true);
       sMile(); nextMile += 25;
     }
+    // biome crossings
+    var bi = bandFor(heightM);
+    if (bi !== bandIdx){
+      bandIdx = bi;
+      if (BANDS[bi].name){
+        popText(flame.x, flame.y-26, BANDS[bi].name, P.text, true);
+        sBell(); flash(P.text, 0.08);
+      }
+    }
     // deaths
     if (flame.fuel<=0) die('gutter');
     else if (flame.y >= darkY-2) die('dark');
@@ -452,7 +478,7 @@ function update(dt){
   for (var i=0;i<candles.length;i++){
     var c=candles[i];
     if (c.lit && !c.dead && c.type!==2){
-      c.burn -= dt;
+      c.burn -= dt*(gust.phase==='blow'?1.8:1);
       if (c.burn<=0){
         c.burn=0; c.dead=true; c.lit=false;
         puff(c.x, candleTop(c), 5, [P.smoke,P.smokeDk], 12, 14, 0.9, false);
@@ -469,6 +495,12 @@ function update(dt){
   for (var i=0;i<embers.length;i++){
     var e=embers[i]; if (e.taken) continue;
     var ey = e.y + Math.sin(timeNow*3+e.ph)*1.5;
+    // gentle magnetism toward a close flame
+    if (state==='play' && dist(flame.x,flame.y,e.x,ey)<18){
+      e.x += (flame.x-e.x)*Math.min(1,dt*6);
+      e.y += (flame.y-ey)*Math.min(1,dt*6);
+      ey = e.y + Math.sin(timeNow*3+e.ph)*1.5;
+    }
     if (state==='play' && dist(flame.x,flame.y,e.x,ey)<8){
       e.taken=true;
       var mult = Math.max(1,flame.combo);
@@ -496,6 +528,7 @@ function update(dt){
     if (dr.tel>0){ dr.tel-=dt; continue; }
     dr.vy = Math.min(dr.vy+340*dt, 190);
     dr.y += dr.vy*dt;
+    if (gust.phase==='blow') dr.x = clamp(dr.x + gust.dir*16*dt, 2, W-2);
     var hit=false;
     if (state==='play' && dist(dr.x,dr.y,flame.x,flame.y)<6){
       hit=true; hurtFlame(K.rainHit,'rain',dr.x,dr.y);
@@ -505,7 +538,7 @@ function update(dt){
         if (Math.abs(dr.x-c.x)<4 && dr.y>=candleTop(c)-2 && dr.y<=c.y){
           hit=true;
           if (c.lit && !(flame.st==='perch'&&flame.on===c)){
-            c.lit=false; sSnuff();
+            c.lit=false; sSnuffCandle();
             puff(c.x,candleTop(c),5,[P.cold1,P.smoke],16,10,0.6,false);
           } else puff(dr.x,dr.y,3,[P.cold1,P.cold2],14,4,0.4,false);
           break;
@@ -528,7 +561,7 @@ function update(dt){
   }
   for (var i=wisps.length-1;i>=0;i--){
     var wsp=wisps[i];
-    wsp.x += wsp.vx*dt;
+    wsp.x += wsp.vx*dt + (gust.phase==='blow'?gust.dir*10*dt:0);
     wsp.y += Math.sin(timeNow*2.2+wsp.ph)*8*dt;
     if (Math.random()<dt*10)
       parts.push({x:wsp.x,y:wsp.y,vx:0,vy:0,life:0.4,t:0,c:P.cold2,sz:1,g:1,grav:-6});
@@ -538,7 +571,7 @@ function update(dt){
         sparks += 25*mult;
         flame.fuel = clamp(flame.fuel+6,0,K.fuelMax);
         popText(wsp.x,wsp.y-8,'DEVOURED +'+(25*mult),P.emberGold,true);
-        sEat(); vib(14); hitStop(0.07); addTrauma(0.25);
+        sEat(); vib(14); hitStop(0.07); addTrauma(0.25); zoomP=1;
         flash(P.fire1,0.2);
         puff(wsp.x,wsp.y,12,[P.cold1,P.fireCore,P.fire1],36,10,0.6,true);
       } else {
@@ -549,6 +582,29 @@ function update(dt){
     }
     if (wsp.x<-12 || wsp.x>W+12) wisps.splice(i,1);
   }
+
+  // ---- cold draughts ----
+  if (state==='play' && heightM>=K.gustFromM){
+    if (gust.phase==='none'){
+      gustTimer -= dt;
+      if (gustTimer<=0){
+        gust.phase='warn'; gust.t=1.1; gust.dir=Math.random()<0.5?-1:1;
+        sHowl();
+        popText(flame.x, flame.y-14, 'DRAUGHT!', P.cold1, false);
+        hint('gust',"A COLD DRAUGHT!,SHORT LEAPS, FAST BURN");
+      }
+    } else {
+      gust.t -= dt;
+      // wind streaks
+      if (Math.random() < dt*(gust.phase==='blow'?46:16))
+        parts.push({x:gust.dir>0?-2:W+2, y:camTop+rand(4,H-4),
+          vx:gust.dir*rand(90,150), vy:rand(-8,8),
+          life:1.5, t:0, c:Math.random()<0.3?P.cold1:P.textDim, sz:1, g:1, grav:0});
+      if (gust.phase==='warn' && gust.t<=0){ gust.phase='blow'; gust.t=rand(2.2,3.4); }
+      else if (gust.phase==='blow' && gust.t<=0){ gust.phase='none'; gustTimer=rand(9,15); }
+    }
+  }
+  GLEAN = gust.phase==='blow' ? gust.dir*2 : (gust.phase==='warn' ? gust.dir : 0);
 
   // ---- the dark ----
   if (state==='play' || state==='over'){
@@ -593,6 +649,7 @@ function update(dt){
   // fx decay
   trauma = Math.max(0, trauma - dt*1.4);
   flashA = Math.max(0, flashA - dt*3.2);
+  zoomP  = Math.max(0, zoomP - dt*5);
 
   // death sequencing
   if (state==='over'){
@@ -612,6 +669,7 @@ function hurtFlame(amt, kind, hx, hy){
 function die(cause){
   if (state!=='play') return;
   state='over'; overT=0; overCause=cause;
+  gust.phase='none'; GLEAN=0;
   timeScale=0.25; slowT=0.8;
   sDeath(); vib([30,40,80]); addTrauma(0.8);
   flash(cause==='dark'?P.darkEdge:P.cold2, 0.35);
@@ -648,12 +706,11 @@ function sy(wy){ return (wy - camTop)|0; } // world→screen y
 
 /* ---------- render ---------- */
 function drawBG(){
-  // vertical depth bands
-  var g = ctx.createLinearGradient ? null : null;
-  ctx.fillStyle = P.bg0; ctx.fillRect(0,0,W,H);
+  var B = BANDS[state==='title'?0:bandIdx];
+  ctx.fillStyle = B.bg0; ctx.fillRect(0,0,W,H);
   // parallax pillars & chains (deterministic from world y)
-  drawParallax(0.25, P.bg1);
-  drawParallax(0.55, P.bg2);
+  drawParallax(0.25, B.bg1);
+  drawParallax(0.55, B.bg2);
 }
 function hash1(n){ var s=Math.sin(n*127.1)*43758.545; return s-Math.floor(s); }
 function drawParallax(f, col){
@@ -716,9 +773,9 @@ function drawCandle(c){
   // candle flame (when lit and not our perch — flame IS the player fire when perched)
   if (c.lit && !(flame && flame.on===c && flame.st==='perch')){
     var fk = ((timeNow*10 + c.wob*3)|0)%3;
-    ctx.fillStyle = P.fire2; ctx.fillRect(c.x-1, T-6+(fk===1?1:0), 3, 4);
-    ctx.fillStyle = P.fire1; ctx.fillRect(c.x, T-5+(fk===2?1:0), 1, 3);
-    ctx.fillStyle = P.fireCore; ctx.fillRect(c.x, T-4, 1, 1);
+    ctx.fillStyle = P.fire2; ctx.fillRect(c.x-1+GLEAN, T-6+(fk===1?1:0), 3, 4);
+    ctx.fillStyle = P.fire1; ctx.fillRect(c.x+GLEAN, T-5+(fk===2?1:0), 1, 3);
+    ctx.fillStyle = P.fireCore; ctx.fillRect(c.x+GLEAN, T-4, 1, 1);
   }
 }
 
@@ -741,13 +798,13 @@ function drawFlamePlayer(){
   fillCircleEl(fx, fy-1, rw*0.55, rh*0.6+0.5);
   ctx.fillStyle = P.fireCore;
   fillCircleEl(fx, fy-1, Math.max(1,rw*0.3), Math.max(1,rh*0.35));
-  // tongue on top
+  // tongue on top (leans in a draught)
   ctx.fillStyle = P.fire2;
-  ctx.fillRect(fx, (fy-rh-2+(((timeNow*14)|0)%2))|0, 1, 2);
+  ctx.fillRect(fx+GLEAN, (fy-rh-2+(((timeNow*14)|0)%2))|0, 1, 2);
   // blaze crown
   if (flame.fuel>=K.blazeAt){
     ctx.fillStyle=P.fireCore;
-    ctx.fillRect(fx-1,(fy-rh-3)|0,1,1); ctx.fillRect(fx+1,(fy-rh-4)|0,1,1);
+    ctx.fillRect(fx-1+GLEAN,(fy-rh-3)|0,1,1); ctx.fillRect(fx+1+GLEAN,(fy-rh-4)|0,1,1);
   }
   // eyes (look toward target/movement)
   var lx = clamp(flame.look.x,-30,30)/30, ly = clamp(flame.look.y,-30,30)/30;
@@ -863,6 +920,20 @@ function drawHUD(){
     ctx.fillStyle=P.stoneLo; ctx.fillRect(W-25,17,20,2);
     ctx.fillStyle=P.fire2; ctx.fillRect(W-25,17,(20*frac)|0,2);
   }
+  // wind indicator (chevrons marching with the draught)
+  if (gust.phase!=='none'){
+    var wa = gust.phase==='blow' ? 0.9 : 0.4+Math.sin(timeNow*10)*0.3;
+    ctx.globalAlpha = clamp(wa,0,1);
+    ctx.fillStyle = P.cold1;
+    var mv = ((timeNow*26)|0)%10 * gust.dir;
+    for (var ci=0;ci<3;ci++){
+      var cx3 = (W>>1) - 14 + ci*10 + mv;
+      ctx.fillRect(cx3, 26, 1, 1);
+      ctx.fillRect(cx3+gust.dir, 27, 1, 1);
+      ctx.fillRect(cx3, 28, 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
   // hint banner
   if (hintQueue.length){
     var lines = hintQueue[0].split(',');
@@ -921,9 +992,9 @@ function drawWorld(){
       var T=sy(candleTop(c));
       if (T<-10||T>H+10) continue;
       var fk=((timeNow*10+c.wob*3)|0)%3;
-      ctx.fillStyle=P.fire2; ctx.fillRect(c.x-1,T-6+(fk===1?1:0),3,4);
-      ctx.fillStyle=P.fire1; ctx.fillRect(c.x,T-5+(fk===2?1:0),1,3);
-      ctx.fillStyle=P.fireCore; ctx.fillRect(c.x,T-4,1,1);
+      ctx.fillStyle=P.fire2; ctx.fillRect(c.x-1+GLEAN,T-6+(fk===1?1:0),3,4);
+      ctx.fillStyle=P.fire1; ctx.fillRect(c.x+GLEAN,T-5+(fk===2?1:0),1,3);
+      ctx.fillStyle=P.fireCore; ctx.fillRect(c.x+GLEAN,T-4,1,1);
     }
   }
   // drops (telegraph shimmer + falling)
@@ -1104,6 +1175,10 @@ function render(){
   }
   ctx.save();
   ctx.translate(sx,sy2);
+  if (zoomP>0 && fxFull){
+    var z = 1 + zoomP*zoomP*0.05;
+    ctx.translate(W>>1,H>>1); ctx.scale(z,z); ctx.translate(-(W>>1),-(H>>1));
+  }
   if (state==='title') drawTitle();
   else if (state==='over') drawOver();
   else drawWorld();
@@ -1190,6 +1265,8 @@ window.WICK = {
   get camTop(){ return camTop; },
   get heightM(){ return heightM; },
   get scale(){ return SCALE; },
+  get gust(){ return gust.phase; },
+  get band(){ return bandIdx; },
   reachable: reachable,
   candleTop: candleTop,
 };
