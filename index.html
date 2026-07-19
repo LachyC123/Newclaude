@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WICK — the last flame</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#050409">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="WICK — you are the last living flame. Leap candle to candle, outrun the rising dark. Your flame is your health, your light and your score.">
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #050409;
+    overflow: hidden;
+    position: fixed; inset: 0;
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #wrap {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    display: block;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<noscript style="color:#f4e3c2;font-family:monospace;position:absolute;top:40%;width:100%;text-align:center">WICK needs JavaScript to burn.</noscript>
+<script>
+'use strict';
+/* ============================================================
+   WICK — the last flame
+   A one-thumb pixel-art vertical climber.
+   Your flame = health + light + score. One resource, all trade-offs.
+   ============================================================ */
+
+/* ---------- tunables ---------- */
+var K = {
+  W: 160,                 // internal pixel width (fixed)
+  HMIN: 240, HMAX: 400,   // internal height clamps
+  gravShake: 3,           // max shake px
+  // flame economy
+  fuelMax: 100, fuelStart: 65,
+  perchRegen: 9,          // fuel/s while perched on burning candle
+  lanternRegen: 5,
+  passiveDrain: 1.2,      // fuel/s always
+  jumpCost: 5,
+  gutterDrain: 26,        // fuel/s perched on a dead candle
+  rainHit: 26,
+  wispHit: 22,
+  blazeAt: 70,            // fuel needed to eat wisps
+  // jumping
+  reachX: 64, reachUp: 70, reachDown: 82,
+  tapAssist: 30,          // px around tap that snaps to a candle
+  // combo
+  comboWindow: 3.4,       // s between landings to keep heat
+  landBonusCap: 6,
+  // candles
+  burnStd: 4.5, burnStub: 2.0,
+  // world
+  pxPerM: 8,
+  darkBase: 7,            // px/s
+  darkPerM: 0.09,
+  darkCap: 34,
+  darkMaxGap: 300,        // dark hurries if further than this
+  darkHurry: 46,
+  // spawns
+  rainFromM: 30, wispFromM: 60,
+};
+
+/* ---------- palette (the whole game lives here) ---------- */
+var P = {
+  void_:'#050409', bg0:'#0b0a18', bg1:'#131126', bg2:'#1c1832',
+  stone:'#2c2847', stoneHi:'#4a4468', stoneLo:'#191630',
+  waxCold:'#6f6a86', waxColdHi:'#8d88a4', waxWarm:'#e9ddc6', waxHi:'#fff6e0', waxLo:'#b3a68f',
+  wick:'#241c14',
+  fireCore:'#fff7e6', fire1:'#ffe08a', fire2:'#ffa53d', fire3:'#e8542e',
+  emberGold:'#ffd75e',
+  cold1:'#bdf3ff', cold2:'#54d6ff', cold3:'#1f7fae',
+  smoke:'#6b6480', smokeDk:'#3d3852',
+  text:'#f4e3c2', textDim:'#8f83a8',
+  darkTendril:'#1a1030', darkEdge:'#3a2b55',
+  brass:'#c9973f', brassDk:'#7a5a26',
+};
+
+/* ---------- tiny 3x5 pixel font ---------- */
+var FONT = {
+ 'A':'010101111101101','B':'110101110101110','C':'011100100100011','D':'110101101101110',
+ 'E':'111100110100111','F':'111100110100100','G':'011100101101011','H':'101101111101101',
+ 'I':'111010010010111','J':'001001001101010','K':'101101110101101','L':'100100100100111',
+ 'M':'101111111101101','N':'110101101101101','O':'010101101101010','P':'110101110100100',
+ 'Q':'010101101010001','R':'110101110101101','S':'011100010001110','T':'111010010010010',
+ 'U':'101101101101111','V':'101101101101010','W':'101101111111101','X':'101101010101101',
+ 'Y':'101101010010010','Z':'111001010100111',
+ '0':'111101101101111','1':'010110010010111','2':'111001111100111','3':'111001111001111',
+ '4':'101101111001001','5':'111100111001111','6':'111100111101111','7':'111001010010010',
+ '8':'111101111101111','9':'111101111001111',
+ ' ':'000000000000000','+':'000010111010000','-':'000000111000000','!':'010010010000010',
+ '.':'000000000000010',':':'000010000010000','/':'001001010100100','x':'000101010101000',
+ "'":'010010000000000',',':'000000000010100',
+};
+
+/* ---------- utils ---------- */
+function rand(a,b){ return a + Math.random()*(b-a); }
+function randi(a,b){ return Math.floor(rand(a,b+1)); }
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function dist(ax,ay,bx,by){ var dx=ax-bx,dy=ay-by; return Math.sqrt(dx*dx+dy*dy); }
+function easeOutBack(t){ var c=1.70158; t-=1; return 1 + t*t*((c+1)*t + c); }
+
+/* ---------- canvas & scale ---------- */
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d');
+var W = K.W, H = 288, SCALE = 2;
+
+function resize(){
+  var ww = window.innerWidth, wh = window.innerHeight;
+  // scale must fit the width AND leave room for at least HMIN rows vertically
+  SCALE = Math.max(1, Math.min(Math.floor(ww / K.W), Math.floor(wh / K.HMIN)));
+  H = clamp(Math.floor(wh / SCALE), K.HMIN, K.HMAX);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = (W*SCALE)+'px';
+  canvas.style.height = (H*SCALE)+'px';
+  ctx.imageSmoothingEnabled = false;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- persistence ---------- */
+function store(k,v){ try{ localStorage.setItem('wick_'+k, JSON.stringify(v)); }catch(e){} }
+function load(k,d){ try{ var v=localStorage.getItem('wick_'+k); return v==null?d:JSON.parse(v); }catch(e){ return d; } }
+var best   = load('best', 0);
+var sndOn  = load('snd', true);
+var fxFull = load('fx', true);
+var hintsDone = load('hints', {});
+
+/* ---------- audio (all procedural) ---------- */
+var AC=null, masterG=null, noiseBuf=null, rumbleG=null, windG=null;
+function initAudio(){
+  if (AC) return;
+  var Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return;
+  AC = new Ctor();
+  masterG = AC.createGain(); masterG.gain.value = 0.55; masterG.connect(AC.destination);
+  var len = AC.sampleRate; noiseBuf = AC.createBuffer(1, len, AC.sampleRate);
+  var d = noiseBuf.getChannelData(0), last=0;
+  for (var i=0;i<len;i++){ var w=Math.random()*2-1; last=(last+0.02*w)/1.02; d[i]=last*3.5; } // brown-ish
+  // dark rumble (gain driven per frame)
+  var rs = AC.createBufferSource(); rs.buffer=noiseBuf; rs.loop=true;
+  var rf = AC.createBiquadFilter(); rf.type='lowpass'; rf.frequency.value=85;
+  rumbleG = AC.createGain(); rumbleG.gain.value=0;
+  rs.connect(rf); rf.connect(rumbleG); rumbleG.connect(masterG); rs.start();
+  // wind ambience
+  var ws = AC.createBufferSource(); ws.buffer=noiseBuf; ws.loop=true; ws.playbackRate.value=0.7;
+  var wf = AC.createBiquadFilter(); wf.type='bandpass'; wf.frequency.value=420; wf.Q.value=0.6;
+  windG = AC.createGain(); windG.gain.value=0.028;
+  ws.connect(wf); wf.connect(windG); windG.connect(masterG); ws.start();
+}
+function tone(f0,f1,dur,type,vol){
+  if (!AC || !sndOn) return;
+  var t=AC.currentTime, o=AC.createOscillator(), g=AC.createGain();
+  o.type=type||'sine'; o.frequency.setValueAtTime(f0,t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(20,f1),t+dur);
+  g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); g.connect(masterG); o.start(t); o.stop(t+dur+0.02);
+}
+function hissS(dur,f0,f1,vol){
+  if (!AC || !sndOn) return;
+  var t=AC.currentTime, s=AC.createBufferSource(); s.buffer=noiseBuf;
+  s.playbackRate.value = rand(0.85,1.15);
+  var f=AC.createBiquadFilter(); f.type='bandpass'; f.Q.value=0.8;
+  f.frequency.setValueAtTime(f0,t); f.frequency.exponentialRampToValueAtTime(Math.max(40,f1),t+dur);
+  var g=AC.createGain(); g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  s.connect(f); f.connect(g); g.connect(masterG); s.start(t); s.stop(t+dur+0.02);
+}
+var CHIME=[0,3,5,7,10,12,15,17,19,22];
+function sJump(){ hissS(0.16,1200,320,0.18); tone(180,260,0.1,'triangle',0.1); }
+function sLand(){ hissS(0.09,2200,700,0.22); tone(520,300,0.1,'triangle',0.2); }
+function sEmber(c){ var s=CHIME[clamp(c,0,CHIME.length-1)]; tone(392*Math.pow(2,s/12),392*Math.pow(2,s/12),0.16,'sine',0.2); }
+function sCombo(c){ var s=CHIME[clamp(c-2,0,CHIME.length-1)]; tone(330*Math.pow(2,s/12),330*Math.pow(2,s/12)*1.01,0.12,'square',0.07); }
+function sComboLost(){ tone(300,170,0.3,'sine',0.1); }
+function sHit(){ hissS(0.32,4200,500,0.4); tone(210,80,0.2,'sawtooth',0.16); }
+function sEat(){ tone(340,880,0.18,'square',0.14); tone(680,1400,0.22,'sine',0.1); }
+function sTick(){ tone(1250,1150,0.03,'square',0.05); }
+function sMile(){ tone(523,523,0.12,'sine',0.18); setTimeout(function(){tone(784,784,0.18,'sine',0.18);},90); }
+function sDeath(){ tone(150,34,1.3,'sawtooth',0.3); hissS(1.1,900,90,0.4); }
+function sUI(){ tone(700,700,0.05,'square',0.09); }
+function sSnuff(){ hissS(0.25,3000,400,0.25); }
+function vib(p){ if (fxFull && navigator.vibrate) { try{ navigator.vibrate(p); }catch(e){} } }
+
+/* ---------- game state ---------- */
+var state='title';        // title | play | over
+var paused=false;
+var timeNow=0;            // sim time
+var timeScale=1, slowT=0; // slow-mo
+var freezeT=0;            // hit-stop (real seconds)
+var trauma=0;             // screen shake 0..1
+var flashC=null, flashA=0;// screen flash
+var overT=0, overCause='';
+
+var candles=[], embers=[], drops=[], wisps=[], parts=[], texts=[], motes=[];
+var camTop=0, darkY=0;
+var flame=null;
+var sparks=0, heightM=0, nextMile=25, runBestY=0;
+var spineX=80, lastGenY=0, rungCount=0, dropTimer=0, wispTimer=0;
+var titleT=0, newBest=false;
+var hintQueue=[], hintT=0;
+
+/* ---------- entities ---------- */
+function mkCandle(x,y,type){
+  var burnMax = type===1 ? K.burnStub : K.burnStd;
+  return { x:x|0, y:y|0, type:type, lit:false, dead:false,
+           burn:burnMax, burnMax:burnMax, wob:rand(0,6.28) };
+}
+function candleH(c){
+  if (c.type===2) return 13; // lantern
+  var frac = c.burn / c.burnMax;
+  var maxH = c.type===1 ? 8 : 16;
+  return c.dead ? 2 : Math.max(3, Math.round(4 + frac*maxH));
+}
+function candleTop(c){ return c.y - candleH(c); }
+
+function mkFlame(c){
+  return { st:'perch', on:c, x:c.x, y:candleTop(c)-1,
+           fuel:K.fuelStart, combo:0, sinceLand:0,
+           fx:0, fy:0, tx:0, ty:0, flyT:0, flyDur:0.4, target:null,
+           sq:1, sqv:0, look:{x:0,y:-1}, gutter:false };
+}
+
+/* ---------- generation ---------- */
+function genRung(){
+  var hM = Math.max(0, (-lastGenY)/K.pxPerM);
+  var gap = rand(30, Math.min(56, 40 + hM*0.06));
+  var y = lastGenY - gap;
+  // guaranteed-reachable spine
+  var f = clamp(1 - (gap/K.reachUp)*(gap/K.reachUp), 0.05, 1);
+  var maxDx = Math.floor(K.reachX * Math.sqrt(f) * 0.85);
+  var dx = randi(-maxDx, maxDx);
+  var nx = clamp(spineX + dx, 18, W-18);
+  var stubChance = clamp(0.1 + hM/380, 0.1, 0.45);
+  var type = Math.random() < stubChance ? 1 : 0;
+  rungCount++;
+  if (rungCount % randi(11,15) === 0) type = 2; // lantern rest stop
+  var c = mkCandle(nx, y, type);
+  candles.push(c);
+  // ember between spine points (risk bait: offset from the straight path)
+  if (Math.random() < 0.55){
+    var ex = clamp((spineX+nx)/2 + randi(-26,26), 10, W-10);
+    var ey = (lastGenY+y)/2 + randi(-8,2);
+    embers.push({x:ex, y:ey, ph:rand(0,6.28), taken:false});
+  }
+  // side branch candle with its own ember reward
+  if (Math.random() < 0.36){
+    var bx = clamp(nx + (Math.random()<0.5?-1:1)*randi(34,54), 14, W-14);
+    if (Math.abs(bx-nx) > 22){
+      candles.push(mkCandle(bx, y - randi(-6,8), Math.random()<0.5?1:0));
+      embers.push({x:clamp(bx+randi(-10,10),8,W-8), y:y-randi(14,26), ph:rand(0,6.28), taken:false});
+    }
+  }
+  spineX = nx; lastGenY = y;
+}
+function ensureGen(){ while (lastGenY > camTop - 120) genRung(); }
+function cleanup(){
+  var cut = darkY + 60;
+  candles = candles.filter(function(c){ return c.y < cut; });
+  embers  = embers.filter(function(e){ return e.y < cut && !e.taken; });
+}
+
+/* ---------- reset / start ---------- */
+function reset(){
+  candles=[]; embers=[]; drops=[]; wisps=[]; parts=[]; texts=[]; motes=[];
+  sparks=0; heightM=0; nextMile=25; newBest=false;
+  spineX=80; lastGenY=40; rungCount=0; dropTimer=0; wispTimer=0;
+  trauma=0; flashA=0; freezeT=0; timeScale=1; slowT=0;
+  var first = mkCandle(80, 40, 0);
+  first.lit = true; first.burnMax = 8; first.burn = 8;
+  candles.push(first);
+  genRung(); // build ladder
+  flame = mkFlame(first);
+  runBestY = flame.y;
+  camTop = flame.y - H*0.62;
+  darkY = flame.y + 120;
+  for (var i=0;i<16;i++) motes.push({x:rand(0,W), y:camTop+rand(0,H), v:rand(3,8), ph:rand(0,6.28)});
+  ensureGen();
+  hintQueue=[]; hintT=0;
+  hint('tap',  "TAP A CANDLE TO LEAP");
+  hint('perch',"PERCHING REFUELS YOU,BUT MELTS THE CANDLE");
+}
+function hint(key, txt){
+  if (hintsDone[key]) return;
+  hintsDone[key]=1; store('hints', hintsDone);
+  hintQueue.push(txt);
+}
+
+/* ---------- particles & fx ---------- */
+function puff(x,y,n,cols,spd,up,life,glow){
+  for (var i=0;i<n;i++){
+    var a = rand(0,6.28), s = rand(spd*0.3, spd);
+    parts.push({x:x,y:y,vx:Math.cos(a)*s,vy:Math.sin(a)*s - up,
+      life:rand(life*0.5,life), t:0, c:cols[randi(0,cols.length-1)],
+      sz:Math.random()<0.3?2:1, g:glow?1:0, grav:glow?-14:8});
+  }
+}
+function popText(x,y,str,col,big){
+  texts.push({x:x,y:y,s:str,c:col,t:0,life:1.1,big:big?1:0});
+}
+function flash(col,a){
+  if (!fxFull) a*=0.4;
+  flashC=col; flashA=Math.max(flashA,a);
+}
+function addTrauma(t){ if (fxFull) trauma=clamp(trauma+t,0,1); else trauma=clamp(trauma+t*0.35,0,0.35); }
+function hitStop(t){ freezeT=Math.max(freezeT,t); }
+
+/* ---------- gameplay: jumping ---------- */
+function reachable(c){
+  if (c.dead || (flame.on===c && flame.st==='perch')) return false;
+  var dx = c.x - flame.x, dy = candleTop(c) - flame.y;
+  var ry = dy < 0 ? K.reachUp : K.reachDown;
+  return (dx*dx)/(K.reachX*K.reachX) + (dy*dy)/(ry*ry) <= 1;
+}
+function tryJump(wx,wy){
+  if (flame.st!=='perch') return;
+  var bestC=null, bestD=1e9;
+  for (var i=0;i<candles.length;i++){
+    var c=candles[i];
+    if (!reachable(c)) continue;
+    var d = dist(wx,wy,c.x,candleTop(c)-4);
+    var d2 = dist(wx,wy,c.x,c.y); // tapping the body counts too
+    d = Math.min(d,d2);
+    if (d < K.tapAssist && d < bestD){ bestD=d; bestC=c; }
+  }
+  if (!bestC){
+    parts.push({x:wx,y:wy,vx:0,vy:0,life:0.25,t:0,c:P.textDim,sz:2,g:1,grav:0,ring:1});
+    return;
+  }
+  // leap!
+  flame.st='fly'; flame.target=bestC;
+  flame.fx=flame.x; flame.fy=flame.y;
+  flame.tx=bestC.x; flame.ty=candleTop(bestC)-1;
+  var dd = dist(flame.fx,flame.fy,flame.tx,flame.ty);
+  flame.flyDur = 0.3 + dd/380; flame.flyT=0;
+  flame.fuel -= K.jumpCost;
+  flame.gutter=false; flame.on=null;
+  flame.sq=1.35; // stretch
+  sJump(); vib(6);
+  puff(flame.fx, flame.fy+2, 6, [P.fire2,P.fire3,P.smoke], 22, 10, 0.5, true);
+}
+function land(c){
+  flame.st='perch'; flame.on=c;
+  flame.x=c.x; flame.y=candleTop(c)-1;
+  flame.sq=0.62; // squash
+  var wasChain = flame.sinceLand <= K.comboWindow && flame.combo>0;
+  flame.combo = wasChain ? flame.combo+1 : 1;
+  flame.sinceLand = 0;
+  if (c.dead){ flame.gutter=true; sSnuff(); }
+  else {
+    if (!c.lit){ c.lit=true; }
+    flame.gutter=false;
+    sLand(); vib(8);
+    flash(P.fire1, 0.12);
+    addTrauma(0.12);
+    puff(flame.x, flame.y+3, 8, [P.fireCore,P.fire1,P.fire2], 30, 16, 0.45, true);
+    if (flame.combo>=2){
+      flame.fuel += Math.min(flame.combo, K.landBonusCap);
+      sCombo(flame.combo);
+      if (flame.combo===5||flame.combo===10||flame.combo===15||flame.combo===20){
+        popText(flame.x, flame.y-14, 'HEAT x'+flame.combo, P.emberGold, true);
+        flash(P.fire2, 0.18); addTrauma(0.2); vib(15);
+      }
+    }
+    hint('combo',"FAST CHAINS BUILD HEAT,HEAT MULTIPLIES SPARKS");
+  }
+  flame.fuel = clamp(flame.fuel, 0, K.fuelMax);
+}
+
+/* ---------- update ---------- */
+function update(dt){
+  timeNow += dt;
+  // hints
+  if (hintQueue.length){ hintT += dt; if (hintT > 4.2){ hintQueue.shift(); hintT=0; } }
+
+  // ---- flame ----
+  if (state==='play'){
+    flame.sinceLand += dt;
+    flame.fuel -= K.passiveDrain*dt;
+    if (flame.st==='perch'){
+      var c = flame.on;
+      if (c.dead || flame.gutter){
+        flame.gutter=true;
+        flame.fuel -= K.gutterDrain*dt;
+        if (Math.random()<dt*7){ sTick(); puff(flame.x,flame.y,1,[P.smoke],10,14,0.6,false); }
+      } else if (c.lit){
+        flame.fuel = Math.min(K.fuelMax, flame.fuel + (c.type===2?K.lanternRegen:K.perchRegen)*dt);
+        // crackle + wax drips
+        if (sndOn && AC && Math.random()<dt*6) hissS(0.03, rand(2500,5200), 2000, 0.04);
+        if (c.type!==2 && Math.random()<dt*2)
+          parts.push({x:c.x+randi(-2,2), y:candleTop(c)+2, vx:0, vy:6, life:0.8, t:0, c:P.waxWarm, sz:1, g:0, grav:6});
+      }
+      flame.x=c.x; flame.y=candleTop(c)-1;
+      // combo expiry
+      if (flame.combo>1 && flame.sinceLand>K.comboWindow){
+        flame.combo=1; sComboLost();
+        popText(flame.x, flame.y-12, 'HEAT FADES', P.textDim, false);
+      }
+    } else if (flame.st==='fly'){
+      flame.flyT += dt;
+      var t = clamp(flame.flyT/flame.flyDur, 0, 1);
+      var mx=(flame.fx+flame.tx)/2, my=Math.min(flame.fy,flame.ty) - 22 - dist(flame.fx,flame.fy,flame.tx,flame.ty)*0.18;
+      var u=1-t;
+      var px = u*u*flame.fx + 2*u*t*mx + t*t*flame.tx;
+      var py = u*u*flame.fy + 2*u*t*my + t*t*flame.ty;
+      flame.look.x = px-flame.x; flame.look.y = py-flame.y;
+      flame.x=px; flame.y=py;
+      // afterimage trail
+      if (Math.random()<dt*40)
+        parts.push({x:flame.x,y:flame.y,vx:0,vy:0,life:0.28,t:0,c:P.fire2,sz:2,g:1,grav:0});
+      if (t>=1) land(flame.target);
+    }
+    // squash-stretch spring back
+    flame.sq += (1-flame.sq) * Math.min(1, dt*10);
+    // look target while perched: nearest reachable above
+    if (flame.st==='perch'){
+      var lk=null, ld=1e9;
+      for (var i=0;i<candles.length;i++){
+        if (reachable(candles[i]) && candles[i].y < flame.y){
+          var d=dist(flame.x,flame.y,candles[i].x,candles[i].y);
+          if (d<ld){ ld=d; lk=candles[i]; }
+        }
+      }
+      if (lk){ flame.look.x=lk.x-flame.x; flame.look.y=candleTop(lk)-flame.y; }
+    }
+    // height + best
+    if (flame.y < runBestY) runBestY = flame.y;
+    heightM = Math.max(0, Math.round((40-19 - runBestY)/K.pxPerM));
+    if (heightM >= nextMile){
+      popText(flame.x, flame.y-16, nextMile+'m!', P.text, true);
+      sMile(); nextMile += 25;
+    }
+    // deaths
+    if (flame.fuel<=0) die('gutter');
+    else if (flame.y >= darkY-2) die('dark');
+  }
+
+  // ---- candles burn ----
+  for (var i=0;i<candles.length;i++){
+    var c=candles[i];
+    if (c.lit && !c.dead && c.type!==2){
+      c.burn -= dt;
+      if (c.burn<=0){
+        c.burn=0; c.dead=true; c.lit=false;
+        puff(c.x, candleTop(c), 5, [P.smoke,P.smokeDk], 12, 14, 0.9, false);
+        if (flame.st==='perch' && flame.on===c){
+          flame.gutter=true;
+          popText(c.x, candleTop(c)-10, 'JUMP!', P.cold2, false);
+          addTrauma(0.15);
+        }
+      }
+    }
+  }
+
+  // ---- embers ----
+  for (var i=0;i<embers.length;i++){
+    var e=embers[i]; if (e.taken) continue;
+    var ey = e.y + Math.sin(timeNow*3+e.ph)*1.5;
+    if (state==='play' && dist(flame.x,flame.y,e.x,ey)<8){
+      e.taken=true;
+      var mult = Math.max(1,flame.combo);
+      flame.fuel = clamp(flame.fuel + 8 + 2*Math.min(mult,8), 0, K.fuelMax);
+      sparks += 5*mult;
+      sEmber(mult); vib(6);
+      popText(e.x, ey-6, '+'+(5*mult), P.emberGold, false);
+      puff(e.x,ey,7,[P.emberGold,P.fireCore,P.fire1],26,10,0.5,true);
+      if (Math.random()<0.5) flash(P.emberGold,0.08);
+    }
+  }
+
+  // ---- rain drops ----
+  if (state==='play' && heightM>=K.rainFromM){
+    dropTimer -= dt;
+    if (dropTimer<=0){
+      dropTimer = rand(2.6, 5.2) * clamp(1.6 - heightM/300, 0.55, 1.6);
+      var tx = clamp(flame.x + randi(-44,44), 8, W-8);
+      drops.push({x:tx, y:camTop-6, vy:0, tel:0.6});
+      hint('drip',"COLD DRIPS SNUFF FIRE,WATCH THE SHIMMER");
+    }
+  }
+  for (var i=drops.length-1;i>=0;i--){
+    var dr=drops[i];
+    if (dr.tel>0){ dr.tel-=dt; continue; }
+    dr.vy = Math.min(dr.vy+340*dt, 190);
+    dr.y += dr.vy*dt;
+    var hit=false;
+    if (state==='play' && dist(dr.x,dr.y,flame.x,flame.y)<6){
+      hit=true; hurtFlame(K.rainHit,'rain',dr.x,dr.y);
+    } else {
+      for (var j=0;j<candles.length;j++){
+        var c=candles[j];
+        if (Math.abs(dr.x-c.x)<4 && dr.y>=candleTop(c)-2 && dr.y<=c.y){
+          hit=true;
+          if (c.lit && !(flame.st==='perch'&&flame.on===c)){
+            c.lit=false; sSnuff();
+            puff(c.x,candleTop(c),5,[P.cold1,P.smoke],16,10,0.6,false);
+          } else puff(dr.x,dr.y,3,[P.cold1,P.cold2],14,4,0.4,false);
+          break;
+        }
+      }
+    }
+    if (hit || dr.y > darkY){ drops.splice(i,1); }
+  }
+
+  // ---- wisps ----
+  if (state==='play' && heightM>=K.wispFromM && wisps.length<2){
+    wispTimer -= dt;
+    if (wispTimer<=0){
+      wispTimer = rand(6,12);
+      var fromL = Math.random()<0.5;
+      wisps.push({x: fromL?-6:W+6, y: flame.y - randi(20,80),
+                  vx: (fromL?1:-1)*rand(14,22), ph:rand(0,6.28)});
+      hint('wisp',"WISPS STEAL FIRE,A FULL BLAZE EATS THEM!");
+    }
+  }
+  for (var i=wisps.length-1;i>=0;i--){
+    var wsp=wisps[i];
+    wsp.x += wsp.vx*dt;
+    wsp.y += Math.sin(timeNow*2.2+wsp.ph)*8*dt;
+    if (Math.random()<dt*10)
+      parts.push({x:wsp.x,y:wsp.y,vx:0,vy:0,life:0.4,t:0,c:P.cold2,sz:1,g:1,grav:-6});
+    if (state==='play' && dist(wsp.x,wsp.y,flame.x,flame.y)<7){
+      if (flame.fuel>=K.blazeAt){
+        var mult=Math.max(1,flame.combo);
+        sparks += 25*mult;
+        flame.fuel = clamp(flame.fuel+6,0,K.fuelMax);
+        popText(wsp.x,wsp.y-8,'DEVOURED +'+(25*mult),P.emberGold,true);
+        sEat(); vib(14); hitStop(0.07); addTrauma(0.25);
+        flash(P.fire1,0.2);
+        puff(wsp.x,wsp.y,12,[P.cold1,P.fireCore,P.fire1],36,10,0.6,true);
+      } else {
+        hurtFlame(K.wispHit,'wisp',wsp.x,wsp.y);
+        flame.combo=1;
+      }
+      wisps.splice(i,1); continue;
+    }
+    if (wsp.x<-12 || wsp.x>W+12) wisps.splice(i,1);
+  }
+
+  // ---- the dark ----
+  if (state==='play' || state==='over'){
+    var spd = Math.min(K.darkBase + heightM*K.darkPerM, K.darkCap);
+    var gap = darkY - flame.y;
+    if (gap > K.darkMaxGap) spd = K.darkHurry;
+    if (state==='over') spd = 4;
+    darkY -= spd*dt;
+    // proximity dread
+    if (rumbleG && AC){
+      var prox = clamp(1 - (darkY-flame.y)/200, 0, 1);
+      rumbleG.gain.setTargetAtTime(prox*prox*0.28*(sndOn?1:0), AC.currentTime, 0.1);
+    }
+    if (gap < 90 && Math.random()<dt*3) addTrauma(0.04);
+  }
+
+  // ---- camera ----
+  var targ = flame.y - H*0.62;
+  if (targ < camTop) camTop += (targ-camTop)*Math.min(1,dt*7);
+  else camTop += (targ-camTop)*Math.min(1,dt*1.2);
+  ensureGen(); cleanup();
+
+  // ---- particles / texts / motes ----
+  for (var i=parts.length-1;i>=0;i--){
+    var p=parts[i]; p.t+=dt;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=(p.grav||0)*dt;
+    if (p.t>=p.life) parts.splice(i,1);
+  }
+  for (var i=texts.length-1;i>=0;i--){
+    var t2=texts[i]; t2.t+=dt; t2.y-=10*dt;
+    if (t2.t>=t2.life) texts.splice(i,1);
+  }
+  for (var i=0;i<motes.length;i++){
+    var m=motes[i]; m.y-=m.v*dt; m.x+=Math.sin(timeNow+m.ph)*3*dt;
+    if (m.y<camTop-4){ m.y=camTop+H+4; m.x=rand(0,W); }
+    if (m.y>camTop+H+8){ m.y=camTop-4; m.x=rand(0,W); }
+  }
+
+  // low fuel dread
+  if (state==='play' && flame.fuel<22 && Math.random()<dt*2.2) sTick();
+
+  // fx decay
+  trauma = Math.max(0, trauma - dt*1.4);
+  flashA = Math.max(0, flashA - dt*3.2);
+
+  // death sequencing
+  if (state==='over'){
+    overT += dt;
+  }
+}
+
+function hurtFlame(amt, kind, hx, hy){
+  flame.fuel -= amt;
+  sHit(); vib(24); hitStop(0.06); addTrauma(0.35);
+  flash(P.cold2, 0.22);
+  puff(hx,hy,10,[P.cold1,P.cold2,P.smoke],30,8,0.5,false);
+  puff(flame.x,flame.y,6,[P.smoke,P.fire3],20,12,0.5,false);
+  if (flame.fuel<=0 && state==='play') die('gutter');
+}
+
+function die(cause){
+  if (state!=='play') return;
+  state='over'; overT=0; overCause=cause;
+  timeScale=0.25; slowT=0.8;
+  sDeath(); vib([30,40,80]); addTrauma(0.8);
+  flash(cause==='dark'?P.darkEdge:P.cold2, 0.35);
+  hitStop(0.12);
+  puff(flame.x,flame.y,22,[P.smoke,P.smokeDk,P.fire3,P.fire2],34,20,1.2,false);
+  parts.push({x:flame.x,y:flame.y,vx:0,vy:-14,life:2.6,t:0,c:P.emberGold,sz:2,g:1,grav:-4,soul:1});
+  if (heightM>best){ best=heightM; store('best',best); newBest=true; }
+}
+
+/* ---------- drawing helpers ---------- */
+function fillCircle(cx,cy,r){
+  cx|=0; cy|=0; r|=0;
+  for (var dy=-r; dy<=r; dy++){
+    var w = Math.floor(Math.sqrt(r*r - dy*dy));
+    ctx.fillRect(cx-w, cy+dy, w*2+1, 1);
+  }
+}
+function drawText(s, x, y, sc, col, align){
+  s = String(s).toUpperCase();
+  var wch = 4*sc, total = s.length*wch - sc;
+  if (align==='c') x -= (total/2)|0;
+  else if (align==='r') x -= total;
+  ctx.fillStyle = col;
+  for (var i=0;i<s.length;i++){
+    var g = FONT[s[i]];
+    if (g){
+      for (var r=0;r<5;r++) for (var cc=0;cc<3;cc++)
+        if (g[r*3+cc]==='1') ctx.fillRect(x+cc*sc, y+r*sc, sc, sc);
+    }
+    x += wch;
+  }
+}
+function sy(wy){ return (wy - camTop)|0; } // world→screen y
+
+/* ---------- render ---------- */
+function drawBG(){
+  // vertical depth bands
+  var g = ctx.createLinearGradient ? null : null;
+  ctx.fillStyle = P.bg0; ctx.fillRect(0,0,W,H);
+  // parallax pillars & chains (deterministic from world y)
+  drawParallax(0.25, P.bg1);
+  drawParallax(0.55, P.bg2);
+}
+function hash1(n){ var s=Math.sin(n*127.1)*43758.545; return s-Math.floor(s); }
+function drawParallax(f, col){
+  ctx.fillStyle = col;
+  var off = camTop*f;
+  var seg = 64;
+  var top = Math.floor((off)/seg)-1, bot = Math.floor((off+H)/seg)+1;
+  for (var s=top; s<=bot; s++){
+    var yy = (s*seg - off)|0;
+    var h1 = hash1(s*3+f*17);
+    // side pillars
+    var pw = 4 + ((h1*5)|0);
+    ctx.fillRect(0, yy, pw, seg);
+    ctx.fillRect(W-pw, yy, pw, seg);
+    // hanging chain link
+    if (h1>0.45){
+      var cx2 = 14 + ((h1*1000)% (W-28));
+      for (var k=0;k<5;k++) ctx.fillRect(cx2|0, yy+k*4, 1, 3);
+    }
+    // broken arch
+    if (h1<0.22){
+      ctx.fillRect(0, yy+((h1*90)|0), 26, 3);
+      ctx.fillRect(W-26, yy+((h1*90)|0), 26, 3);
+    }
+  }
+}
+
+function drawCandle(c){
+  var h = candleH(c), top = candleTop(c), Y=sy(c.y), T=sy(top);
+  if (Y<-30 || T>H+30) return;
+  // ledge
+  ctx.fillStyle = P.stoneLo; ctx.fillRect(c.x-7, Y+2, 14, 3);
+  ctx.fillStyle = P.stone;   ctx.fillRect(c.x-6, Y, 12, 2);
+  ctx.fillStyle = P.stoneHi; ctx.fillRect(c.x-6, Y, 12, 1);
+  if (c.type===2){ // brass lantern
+    ctx.fillStyle=P.brassDk; ctx.fillRect(c.x-4, T, 8, h-2);
+    ctx.fillStyle=P.brass;   ctx.fillRect(c.x-4, T, 8, 1);
+    ctx.fillRect(c.x-4, T, 1, h-2); ctx.fillRect(c.x+3, T, 1, h-2);
+    ctx.fillRect(c.x-1, T-2, 2, 2);
+    ctx.fillStyle=P.void_;   ctx.fillRect(c.x-3, T+2, 6, h-5);
+    if (c.lit){ ctx.fillStyle=P.fire1; ctx.fillRect(c.x-1, T+h-7, 2, 3); }
+    return;
+  }
+  var wax = c.lit ? P.waxWarm : (c.dead ? P.waxLo : P.waxCold);
+  var waxHi = c.lit ? P.waxHi : (c.dead ? P.waxCold : P.waxColdHi);
+  var wdt = c.type===1 ? 5 : 7;
+  if (c.dead){
+    // melted pool
+    ctx.fillStyle = wax; ctx.fillRect(c.x-4, Y-2, 9, 2);
+    ctx.fillStyle = waxHi; ctx.fillRect(c.x-3, Y-2, 4, 1);
+    return;
+  }
+  ctx.fillStyle = wax; ctx.fillRect(c.x-(wdt>>1), T, wdt, h);
+  ctx.fillStyle = waxHi; ctx.fillRect(c.x-(wdt>>1), T, 2, h);
+  // drips
+  ctx.fillStyle = wax;
+  ctx.fillRect(c.x+(wdt>>1)-1, T+2+((Math.sin(c.wob)*2)|0), 1, 3);
+  // wick
+  ctx.fillStyle = P.wick; ctx.fillRect(c.x, T-2, 1, 2);
+  // candle flame (when lit and not our perch — flame IS the player fire when perched)
+  if (c.lit && !(flame && flame.on===c && flame.st==='perch')){
+    var fk = ((timeNow*10 + c.wob*3)|0)%3;
+    ctx.fillStyle = P.fire2; ctx.fillRect(c.x-1, T-6+(fk===1?1:0), 3, 4);
+    ctx.fillStyle = P.fire1; ctx.fillRect(c.x, T-5+(fk===2?1:0), 1, 3);
+    ctx.fillStyle = P.fireCore; ctx.fillRect(c.x, T-4, 1, 1);
+  }
+}
+
+function drawFlamePlayer(){
+  if (state==='over' && overT>0.55) return; // gone to smoke
+  var fx=flame.x|0, fy=sy(flame.y);
+  var fuelF = clamp(flame.fuel/K.fuelMax, 0, 1);
+  var r = 2 + fuelF*3.2;                    // body radius
+  var sq = flame.sq;
+  var rw = r/Math.sqrt(sq), rh = r*sq;      // squash & stretch, volume-ish conserved
+  var flick = Math.sin(timeNow*22)*0.6 + Math.sin(timeNow*9)*0.5;
+  if (flame.gutter) flick *= 2.5;
+  rh += flick*0.5;
+  // outer / mid / core
+  ctx.fillStyle = P.fire3;
+  fillCircleEl(fx, fy, rw+1.2, rh+2.2);
+  ctx.fillStyle = P.fire2;
+  fillCircleEl(fx, fy-1, rw*0.8+0.5, rh*0.85+1);
+  ctx.fillStyle = P.fire1;
+  fillCircleEl(fx, fy-1, rw*0.55, rh*0.6+0.5);
+  ctx.fillStyle = P.fireCore;
+  fillCircleEl(fx, fy-1, Math.max(1,rw*0.3), Math.max(1,rh*0.35));
+  // tongue on top
+  ctx.fillStyle = P.fire2;
+  ctx.fillRect(fx, (fy-rh-2+(((timeNow*14)|0)%2))|0, 1, 2);
+  // blaze crown
+  if (flame.fuel>=K.blazeAt){
+    ctx.fillStyle=P.fireCore;
+    ctx.fillRect(fx-1,(fy-rh-3)|0,1,1); ctx.fillRect(fx+1,(fy-rh-4)|0,1,1);
+  }
+  // eyes (look toward target/movement)
+  var lx = clamp(flame.look.x,-30,30)/30, ly = clamp(flame.look.y,-30,30)/30;
+  var ex = fx + (lx*1.5|0), ey = fy - 1 + (ly*1.2|0);
+  ctx.fillStyle = '#2a1608';
+  ctx.fillRect(ex-2, ey, 1, 2); ctx.fillRect(ex+1, ey, 1, 2);
+}
+function fillCircleEl(cx,cy,rx,ry){
+  cx|=0; cy|=0; rx=Math.max(1,rx); ry=Math.max(1,ry);
+  var R = Math.ceil(ry);
+  for (var dy=-R; dy<=R; dy++){
+    var q = 1-(dy*dy)/(ry*ry);
+    if (q<=0) continue;
+    var w = Math.floor(rx*Math.sqrt(q));
+    ctx.fillRect(cx-w, cy+dy, w*2+1, 1);
+  }
+}
+
+function drawDarknessOverlay(){
+  // dark veil with punched stepped light
+  var ov = drawDarknessOverlay.cv || (drawDarknessOverlay.cv = document.createElement('canvas'));
+  if (ov.width!==W||ov.height!==H){ ov.width=W; ov.height=H; }
+  var oc = ov.getContext('2d');
+  oc.clearRect(0,0,W,H);
+  oc.fillStyle = 'rgba(5,4,9,0.84)';
+  oc.fillRect(0,0,W,H);
+  oc.globalCompositeOperation='destination-out';
+  function punch(x,y,r){
+    x|=0;y|=0;
+    var steps=[[1,0.42],[0.72,0.65],[0.45,1]];
+    for (var s2=0;s2<3;s2++){
+      var rr=(r*steps[s2][0])|0;
+      oc.globalAlpha=steps[s2][1];
+      for (var dy=-rr;dy<=rr;dy++){
+        var w2=Math.floor(Math.sqrt(rr*rr-dy*dy));
+        oc.fillRect(x-w2,y+dy,w2*2+1,1);
+      }
+    }
+    oc.globalAlpha=1;
+  }
+  // player light
+  if (state!=='over' || overT<0.6){
+    var lr = 24 + clamp(flame.fuel,0,K.fuelMax)*0.5 + Math.min(flame.combo,10)*1.2 + Math.sin(timeNow*13)*1.5;
+    punch(flame.x, sy(flame.y), lr);
+  }
+  // candle lights
+  for (var i=0;i<candles.length;i++){
+    var c=candles[i];
+    if (!c.lit) continue;
+    var yy=sy(candleTop(c));
+    if (yy<-40||yy>H+40) continue;
+    punch(c.x, yy-3, c.type===2?22:15+Math.sin(timeNow*8+c.wob)*1.5);
+  }
+  // embers glimmer faintly
+  for (var i=0;i<embers.length;i++){
+    var e=embers[i]; if (e.taken) continue;
+    var yy=sy(e.y);
+    if (yy<-10||yy>H+10) continue;
+    punch(e.x, yy, 6);
+  }
+  // wisps carry cold light
+  for (var i=0;i<wisps.length;i++) punch(wisps[i].x, sy(wisps[i].y), 12);
+  oc.globalCompositeOperation='source-over';
+  ctx.drawImage(ov,0,0);
+}
+
+function drawDark(){
+  var dY = sy(darkY);
+  if (dY > H+8) return;
+  ctx.fillStyle = P.void_;
+  ctx.fillRect(0, Math.max(0,dY), W, H-Math.max(0,dY));
+  // boiling tendrils
+  for (var x=0;x<W;x+=3){
+    var th = 4 + Math.sin(x*0.35 + timeNow*2.4)*3 + Math.sin(x*0.11 - timeNow*1.3)*4;
+    ctx.fillStyle = P.void_;
+    ctx.fillRect(x, (dY-th)|0, 3, (th+2)|0);
+    ctx.fillStyle = P.darkTendril;
+    ctx.fillRect(x, (dY-th)|0, 3, 2);
+  }
+  ctx.fillStyle = P.darkEdge;
+  for (var x=0;x<W;x+=7){
+    var yy = dY - 6 - Math.sin(x*0.5+timeNow*3)*3;
+    if (Math.sin(x*13.7+timeNow*5)>0.6) ctx.fillRect(x, yy|0, 1, 1);
+  }
+  // rising void particles
+  for (var i=0;i<4;i++){
+    var vx2 = (hash1(i*7+((timeNow*2)|0))*W)|0;
+    var vy2 = dY - 10 - ((hash1(i*13+((timeNow*3)|0))*26)|0);
+    ctx.fillStyle = P.darkTendril;
+    ctx.fillRect(vx2, vy2, 1, 2);
+  }
+}
+
+function drawHUD(){
+  // height (headline)
+  drawText(heightM+'m', 5, 5, 2, P.text);
+  // sparks
+  ctx.fillStyle=P.emberGold;
+  ctx.fillRect(6,19,2,2); ctx.fillRect(5,20,1,1); ctx.fillRect(8,20,1,1); ctx.fillRect(7,18,1,1); ctx.fillRect(7,21,1,1);
+  drawText(''+sparks, 12, 18, 1, P.emberGold);
+  // fuel candle meter
+  var mh=18, mf=clamp(flame.fuel/K.fuelMax,0,1);
+  var mx=6,my=29;
+  ctx.fillStyle=P.stoneLo; ctx.fillRect(mx-1,my,7,mh+2);
+  var wh=(mh*mf)|0;
+  ctx.fillStyle= flame.fuel<25 && ((timeNow*6|0)%2===0) ? P.fire3 : P.waxWarm;
+  ctx.fillRect(mx, my+1+(mh-wh), 5, wh);
+  ctx.fillStyle=P.fire1; ctx.fillRect(mx+2, my+(mh-wh)-2, 1, 2);
+  // combo
+  if (flame.combo>=2){
+    var frac = clamp(1-flame.sinceLand/K.comboWindow,0,1);
+    drawText('x'+flame.combo, W-5, 5, 2, frac<0.3&&((timeNow*8|0)%2===0)?P.fire3:P.emberGold, 'r');
+    ctx.fillStyle=P.stoneLo; ctx.fillRect(W-25,17,20,2);
+    ctx.fillStyle=P.fire2; ctx.fillRect(W-25,17,(20*frac)|0,2);
+  }
+  // hint banner
+  if (hintQueue.length){
+    var lines = hintQueue[0].split(',');
+    var by = H-30;
+    var a = hintT<0.3 ? hintT/0.3 : (hintT>3.8?(4.2-hintT)/0.4:1);
+    ctx.globalAlpha = clamp(a,0,1);
+    for (var i=0;i<lines.length;i++)
+      drawText(lines[i], W/2, by+i*7, 1, P.text, 'c');
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawBestLine(){
+  if (best<=0) return;
+  var wy = 40-19 - best*K.pxPerM;
+  var yy = sy(wy);
+  if (yy<-6||yy>H+6) return;
+  ctx.fillStyle = P.emberGold;
+  for (var x=0;x<W;x+=6) ctx.fillRect(x,yy,3,1);
+  drawText('BEST', W-4, yy-7, 1, P.emberGold, 'r');
+}
+
+function drawWorld(){
+  drawBG();
+  // motes (dim, under overlay)
+  ctx.fillStyle = P.textDim;
+  for (var i=0;i<motes.length;i++){
+    var m=motes[i], yy=sy(m.y);
+    if (yy>=0&&yy<H) ctx.fillRect(m.x|0, yy, 1, 1);
+  }
+  drawBestLine();
+  for (var i=0;i<candles.length;i++) drawCandle(candles[i]);
+  // world-layer particles
+  for (var i=0;i<parts.length;i++){
+    var p=parts[i]; if (p.g) continue;
+    ctx.globalAlpha = clamp(1-p.t/p.life,0,1);
+    ctx.fillStyle=p.c; ctx.fillRect(p.x|0, sy(p.y), p.sz, p.sz);
+  }
+  ctx.globalAlpha=1;
+  // darkness veil + punched light
+  drawDarknessOverlay();
+  // === self-lit things above the veil ===
+  // embers
+  for (var i=0;i<embers.length;i++){
+    var e=embers[i]; if (e.taken) continue;
+    var yy=sy(e.y + Math.sin(timeNow*3+e.ph)*1.5);
+    if (yy<-6||yy>H+6) continue;
+    ctx.fillStyle=P.emberGold;
+    ctx.fillRect(e.x-1,yy,3,1); ctx.fillRect(e.x,yy-1,1,3);
+    if (((timeNow*4+e.ph)|0)%3===0){ ctx.fillStyle=P.fireCore; ctx.fillRect(e.x,yy,1,1); }
+  }
+  // candle flame tips re-draw (bright over veil)
+  for (var i=0;i<candles.length;i++){
+    var c=candles[i];
+    if (c.lit && !(flame.on===c&&flame.st==='perch')){
+      var T=sy(candleTop(c));
+      if (T<-10||T>H+10) continue;
+      var fk=((timeNow*10+c.wob*3)|0)%3;
+      ctx.fillStyle=P.fire2; ctx.fillRect(c.x-1,T-6+(fk===1?1:0),3,4);
+      ctx.fillStyle=P.fire1; ctx.fillRect(c.x,T-5+(fk===2?1:0),1,3);
+      ctx.fillStyle=P.fireCore; ctx.fillRect(c.x,T-4,1,1);
+    }
+  }
+  // drops (telegraph shimmer + falling)
+  for (var i=0;i<drops.length;i++){
+    var dr=drops[i];
+    if (dr.tel>0){
+      if (((timeNow*10)|0)%2===0){
+        ctx.fillStyle=P.cold1;
+        ctx.fillRect(dr.x, 1, 1, 3);
+        ctx.globalAlpha=0.25; ctx.fillStyle=P.cold3;
+        ctx.fillRect(dr.x, 4, 1, H-4); ctx.globalAlpha=1;
+      }
+    } else {
+      var yy=sy(dr.y);
+      ctx.fillStyle=P.cold2; ctx.fillRect(dr.x,yy-3,1,4);
+      ctx.fillStyle=P.cold1; ctx.fillRect(dr.x,yy,1,1);
+    }
+  }
+  // wisps
+  for (var i=0;i<wisps.length;i++){
+    var wsp=wisps[i], yy=sy(wsp.y + Math.sin(timeNow*2.2+wsp.ph)*3);
+    ctx.fillStyle=P.cold3; fillCircleEl(wsp.x,yy,3,4);
+    ctx.fillStyle=P.cold2; fillCircleEl(wsp.x,yy-1,2,2.6);
+    ctx.fillStyle=P.cold1; ctx.fillRect(wsp.x|0,yy-2,1,2);
+    // wisp eyes — hungry little thing
+    ctx.fillStyle=P.void_;
+    ctx.fillRect((wsp.x|0)-1,yy-1,1,1); ctx.fillRect((wsp.x|0)+1,yy-1,1,1);
+  }
+  // player
+  drawFlamePlayer();
+  // reachable markers (gold carets)
+  if (state==='play' && flame.st==='perch'){
+    var bob = ((Math.sin(timeNow*5)*1.5)|0);
+    for (var i=0;i<candles.length;i++){
+      var c=candles[i];
+      if (!reachable(c)) continue;
+      var yy=sy(candleTop(c))-9+bob;
+      if (yy<-6||yy>H+6) continue;
+      ctx.globalAlpha = 0.75+Math.sin(timeNow*5)*0.25;
+      ctx.fillStyle=P.emberGold;
+      ctx.fillRect(c.x-2,yy+1,1,1); ctx.fillRect(c.x-1,yy,1,1);
+      ctx.fillRect(c.x,yy-1,1,1);
+      ctx.fillRect(c.x+1,yy,1,1); ctx.fillRect(c.x+2,yy+1,1,1);
+      ctx.globalAlpha=1;
+    }
+  }
+  // glow-layer particles
+  for (var i=0;i<parts.length;i++){
+    var p=parts[i]; if (!p.g) continue;
+    var a = clamp(1-p.t/p.life,0,1);
+    ctx.globalAlpha=a;
+    ctx.fillStyle=p.c;
+    if (p.ring){
+      var rr=(2+p.t*30)|0;
+      ctx.fillRect((p.x-rr)|0,sy(p.y),rr*2,1); ctx.fillRect(p.x|0,sy(p.y)-rr,1,rr*2);
+    } else if (p.soul){
+      ctx.fillRect(p.x|0, sy(p.y), 2, 2);
+      ctx.globalAlpha=a*0.5; ctx.fillRect((p.x-1)|0, sy(p.y)-1, 4, 4);
+    } else {
+      ctx.fillRect(p.x|0, sy(p.y), p.sz, p.sz);
+    }
+  }
+  ctx.globalAlpha=1;
+  drawDark();
+  // floating texts
+  for (var i=0;i<texts.length;i++){
+    var t2=texts[i];
+    var a=clamp(1-t2.t/t2.life,0,1);
+    ctx.globalAlpha = a;
+    var sc = t2.big ? (t2.t<0.15 ? (easeOutBack(t2.t/0.15)>1.5?2:2):2) : 1;
+    drawText(t2.s, t2.x|0, sy(t2.y), t2.big?2:1, t2.c, 'c');
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawTitle(){
+  drawBG();
+  titleT += 1/60;
+  // big candle center
+  var cx=W>>1, cy=(H*0.56)|0;
+  ctx.fillStyle=P.stoneLo; ctx.fillRect(cx-12,cy+2,24,4);
+  ctx.fillStyle=P.stone; ctx.fillRect(cx-11,cy,22,2);
+  ctx.fillStyle=P.waxWarm; ctx.fillRect(cx-5,cy-26,11,26);
+  ctx.fillStyle=P.waxHi; ctx.fillRect(cx-5,cy-26,3,26);
+  ctx.fillStyle=P.waxWarm; ctx.fillRect(cx+5,cy-22,2,6);
+  ctx.fillStyle=P.wick; ctx.fillRect(cx,cy-28,1,2);
+  // veil + light
+  var ov=drawTitle.cv||(drawTitle.cv=document.createElement('canvas'));
+  if (ov.width!==W||ov.height!==H){ov.width=W;ov.height=H;}
+  var oc=ov.getContext('2d');
+  oc.clearRect(0,0,W,H);
+  oc.fillStyle='rgba(5,4,9,0.78)'; oc.fillRect(0,0,W,H);
+  oc.globalCompositeOperation='destination-out';
+  var lr=44+Math.sin(titleT*10)*2;
+  var steps=[[1,0.4],[0.7,0.6],[0.42,1]];
+  for (var s2=0;s2<3;s2++){
+    var rr=(lr*steps[s2][0])|0; oc.globalAlpha=steps[s2][1];
+    for (var dy=-rr;dy<=rr;dy++){
+      var w2=Math.floor(Math.sqrt(rr*rr-dy*dy));
+      oc.fillRect(cx-w2,cy-34+dy,w2*2+1,1);
+    }
+  }
+  oc.globalAlpha=1; oc.globalCompositeOperation='source-over';
+  ctx.drawImage(ov,0,0);
+  // flame on top of veil
+  var fl=Math.sin(titleT*20)*1+Math.sin(titleT*7);
+  ctx.fillStyle=P.fire3; fillCircleEl(cx,cy-33,3.4,4.5+fl*0.4);
+  ctx.fillStyle=P.fire2; fillCircleEl(cx,cy-34,2.4,3.4);
+  ctx.fillStyle=P.fire1; fillCircleEl(cx,cy-34,1.5,2.2);
+  ctx.fillStyle=P.fireCore; fillCircleEl(cx,cy-35,1,1.2);
+  ctx.fillStyle='#2a1608'; ctx.fillRect(cx-1,cy-35,1,2); ctx.fillRect(cx+1,cy-35,1,2);
+  // drifting embers
+  for (var i=0;i<5;i++){
+    var ex=cx + Math.sin(titleT*0.7+i*2.2)*(20+i*8);
+    var ey=cy-40 - ((titleT*9+i*23)%70);
+    ctx.globalAlpha=0.7-((titleT*9+i*23)%70)/110;
+    ctx.fillStyle=i%2?P.emberGold:P.fire2;
+    ctx.fillRect(ex|0,ey|0,1,1);
+    ctx.globalAlpha=1;
+  }
+  // logo
+  var ly=(H*0.16)|0;
+  drawText('WICK', cx+1, ly+1, 5, '#2a1608', 'c');
+  drawText('WICK', cx, ly, 5, ((titleT*3|0)%7===0)?P.fire1:P.emberGold, 'c');
+  drawText('THE LAST FLAME', cx, ly+30, 1, P.textDim, 'c');
+  // prompt
+  ctx.globalAlpha = 0.6+Math.sin(titleT*4)*0.4;
+  drawText('TAP TO LIGHT THE CLIMB', cx, (H*0.72)|0, 1, P.text, 'c');
+  ctx.globalAlpha = 1;
+  if (best>0) drawText('BEST '+best+'m', cx, (H*0.79)|0, 1, P.emberGold, 'c');
+  drawText('TAP CANDLES  OUTRUN THE DARK', cx, (H*0.86)|0, 1, P.textDim, 'c');
+  // settings chips
+  drawChip(28, H-14, 'SND '+(sndOn?'ON':'OFF'), sndOn);
+  drawChip(W-28, H-14, 'FX '+(fxFull?'FULL':'SOFT'), fxFull);
+}
+function drawChip(cx,cy,label,on){
+  var w=44;
+  ctx.fillStyle = on?P.stone:P.stoneLo;
+  ctx.fillRect(cx-w/2, cy-6, w, 12);
+  ctx.fillStyle = on?P.stoneHi:P.stone;
+  ctx.fillRect(cx-w/2, cy-6, w, 1);
+  drawText(label, cx, cy-2, 1, on?P.text:P.textDim, 'c');
+}
+
+function drawOver(){
+  drawWorld();
+  var a = clamp((overT-0.5)/0.8, 0, 0.82);
+  ctx.fillStyle='rgba(5,4,9,'+a+')';
+  ctx.fillRect(0,0,W,H);
+  if (overT<0.9) return;
+  var cx=W>>1, ty=(H*0.2)|0;
+  var msg = overCause==='dark' ? 'THE DARK TOOK YOU' : 'YOUR FLAME GUTTERED OUT';
+  drawText(msg, cx, ty, 1, P.textDim, 'c');
+  drawText(heightM+'m', cx, ty+14, 4, P.text, 'c');
+  // sparks
+  drawText('SPARKS '+sparks, cx, ty+42, 1, P.emberGold, 'c');
+  if (newBest){
+    ctx.globalAlpha = 0.6+Math.sin(timeNow*6)*0.4;
+    drawText('NEW BEST!', cx, ty+54, 2, P.fire1, 'c');
+    ctx.globalAlpha=1;
+  } else {
+    drawText('BEST '+best+'m', cx, ty+54, 1, P.textDim, 'c');
+  }
+  if (overT>1.4){
+    ctx.globalAlpha=0.6+Math.sin(timeNow*4)*0.4;
+    drawText('TAP TO RISE AGAIN', cx, (H*0.68)|0, 1, P.text, 'c');
+    ctx.globalAlpha=1;
+  }
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  // screen shake
+  var sx=0, sy2=0;
+  if (trauma>0){
+    var sh=trauma*trauma*K.gravShake;
+    sx=(Math.sin(timeNow*91)*sh)|0; sy2=(Math.sin(timeNow*137)*sh)|0;
+  }
+  ctx.save();
+  ctx.translate(sx,sy2);
+  if (state==='title') drawTitle();
+  else if (state==='over') drawOver();
+  else drawWorld();
+  ctx.restore();
+  // flash overlay
+  if (flashA>0.01){
+    ctx.globalAlpha=Math.min(flashA,0.5);
+    ctx.fillStyle=flashC||'#fff';
+    ctx.fillRect(0,0,W,H);
+    ctx.globalAlpha=1;
+  }
+  // low fuel vignette
+  if (state==='play' && flame.fuel<25){
+    var v=(1-flame.fuel/25)*0.45*(0.8+Math.sin(timeNow*5)*0.2);
+    ctx.globalAlpha=v; ctx.fillStyle=P.void_;
+    ctx.fillRect(0,0,W,6); ctx.fillRect(0,H-6,W,6);
+    ctx.fillRect(0,0,6,H); ctx.fillRect(W-6,0,6,H);
+    ctx.globalAlpha=1;
+  }
+  if (state==='play') drawHUD();
+  if (paused && state==='play'){
+    ctx.fillStyle='rgba(5,4,9,0.7)'; ctx.fillRect(0,0,W,H);
+    drawText('PAUSED', W>>1, (H>>1)-8, 2, P.text, 'c');
+    drawText('TAP TO RESUME', W>>1, (H>>1)+8, 1, P.textDim, 'c');
+  }
+}
+
+/* ---------- input ---------- */
+canvas.addEventListener('pointerdown', function(e){
+  e.preventDefault();
+  initAudio();
+  if (AC && AC.state==='suspended') AC.resume();
+  var rect = canvas.getBoundingClientRect();
+  var x = (e.clientX-rect.left)/SCALE, y=(e.clientY-rect.top)/SCALE;
+  if (paused){ paused=false; return; }
+  if (state==='title'){
+    // settings chips
+    if (y>H-22){
+      if (x<56){ sndOn=!sndOn; store('snd',sndOn); sUI(); return; }
+      if (x>W-56){ fxFull=!fxFull; store('fx',fxFull); sUI(); return; }
+    }
+    sUI(); reset(); state='play';
+    return;
+  }
+  if (state==='over'){
+    if (overT>1.0){ sUI(); reset(); state='play'; }
+    return;
+  }
+  // play: tap → jump (convert to world coords)
+  tryJump(x, y + camTop);
+}, {passive:false});
+window.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden && state==='play') paused=true;
+});
+window.addEventListener('blur', function(){ if (state==='play') paused=true; });
+
+/* ---------- main loop ---------- */
+var lastT=0, acc=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  if (!lastT) lastT=ts;
+  var real = Math.min((ts-lastT)/1000, 0.1);
+  lastT=ts;
+  if (freezeT>0){ freezeT-=real; render(); return; }
+  if (slowT>0){ slowT-=real; if (slowT<=0) timeScale=1; }
+  if (!paused){
+    acc += real*timeScale;
+    var step=1/60, n=0;
+    while (acc>=step && n<5){
+      if (state==='title'){ acc=0; break; }
+      update(step); acc-=step; n++;
+    }
+  }
+  render();
+}
+requestAnimationFrame(loop);
+
+/* debug hooks for automated smoke tests */
+window.WICK = {
+  get state(){ return state; },
+  get flame(){ return flame; },
+  get candles(){ return candles; },
+  get camTop(){ return camTop; },
+  get heightM(){ return heightM; },
+  get scale(){ return SCALE; },
+  reachable: reachable,
+  candleTop: candleTop,
+};
+</script>
+</body>
+</html>
