@@ -64,9 +64,11 @@ tap candle → arc flight (grab embers) → landing ignition (flash/squash/chime
 
 *(Second pass, 2026-07: added draughts as the late-game third pressure, biome shifts every 100m, distinct snuff/howl/bell audio, ember magnetism, zoom-punch on devour, always-on trail at ×10 heat, PWA manifest + icon; fixed dead-candle landings extending combos.)*
 
-1. **Balance still untested on real thumbs** — an optimal chainer holds full fuel; draughts pressure the wick/reach economy but drip density above 150m may need tuning up.
-2. Parallax silhouettes are shared across biomes — per-biome props (bones, rust chains, nothing at all in the Hollow) would deepen the shift.
-3. No offline service worker (manifest only); add one if the game gets a permanent host.
-4. Wisps above 250m could gain a second behaviour (slow homing) to keep the predator/prey flip tense.
+*(Third pass, 2026-07: input buffering — mid-flight taps queue the next leap; live NEW BEST moment during the run; blaze-threshold whoomf + ring; low-fuel heartbeat; dying wicks flash a warning; the dark grows grasping tendrils when close; per-biome parallax architecture and stone tints; gentle wisp homing above 250m; sparse ambient bell tolls that deepen per biome; camera dip on landing; flame idle breathing; white-hot combo counter at ×10; death-screen count-up; landing/jump pitch variation; offline service worker.)*
+
+1. **Balance still untested on real thumbs** — an optimal chainer holds full fuel; drip density above 150m may need tuning up.
+2. Boss-like set pieces (e.g. a great bell to ring at each biome gate) would give the climb landmarks beyond palette shifts.
+3. Leaderboard / share-my-height (even a screenshot composer) would extend the "beat yourself" hook socially.
+4. Haptic patterns are uniform; distinct patterns per event tier would deepen feel on supporting devices.
 
 **Single highest-impact next step:** playtest on real phones and tune `K` (all tunables are one object at the top of `index.html`).

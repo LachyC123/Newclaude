@@ -94,10 +94,10 @@ var P = {
 
 /* biomes: the tower changes as you climb */
 var BANDS = [
-  {at:0,   name:'',                 bg0:'#0b0a18', bg1:'#131126', bg2:'#1c1832'},
-  {at:100, name:'THE BONE GALLERY', bg0:'#0a0f12', bg1:'#101a1e', bg2:'#17262b'},
-  {at:200, name:'THE RUST CHAPEL',  bg0:'#120b0a', bg1:'#1d120e', bg2:'#291a12'},
-  {at:300, name:'THE HOLLOW',       bg0:'#070510', bg1:'#0d0918', bg2:'#150e24'},
+  {at:0,   name:'',                 bg0:'#0b0a18', bg1:'#131126', bg2:'#1c1832', st:'#2c2847', stHi:'#4a4468', stLo:'#191630'},
+  {at:100, name:'THE BONE GALLERY', bg0:'#0a0f12', bg1:'#101a1e', bg2:'#17262b', st:'#2a3a3c', stHi:'#4c6062', stLo:'#162224'},
+  {at:200, name:'THE RUST CHAPEL',  bg0:'#120b0a', bg1:'#1d120e', bg2:'#291a12', st:'#3d2a1c', stHi:'#5f4530', stLo:'#241710'},
+  {at:300, name:'THE HOLLOW',       bg0:'#070510', bg1:'#0d0918', bg2:'#150e24', st:'#221c38', stHi:'#3c3458', stLo:'#120e20'},
 ];
 function bandFor(h){ var b=0; for (var i=0;i<BANDS.length;i++) if (h>=BANDS[i].at) b=i; return b; }
 
@@ -192,8 +192,8 @@ function hissS(dur,f0,f1,vol){
   s.connect(f); f.connect(g); g.connect(masterG); s.start(t); s.stop(t+dur+0.02);
 }
 var CHIME=[0,3,5,7,10,12,15,17,19,22];
-function sJump(){ hissS(0.16,1200,320,0.18); tone(180,260,0.1,'triangle',0.1); }
-function sLand(){ hissS(0.09,2200,700,0.22); tone(520,300,0.1,'triangle',0.2); }
+function sJump(){ hissS(0.16,1200,320,0.18); tone(rand(168,196),rand(240,280),0.1,'triangle',0.1); }
+function sLand(){ hissS(0.09,2200,700,0.22); tone(rand(480,560),rand(280,320),0.1,'triangle',0.2); }
 function sEmber(c){ var s=CHIME[clamp(c,0,CHIME.length-1)]; tone(392*Math.pow(2,s/12),392*Math.pow(2,s/12),0.16,'sine',0.2); }
 function sCombo(c){ var s=CHIME[clamp(c-2,0,CHIME.length-1)]; tone(330*Math.pow(2,s/12),330*Math.pow(2,s/12)*1.01,0.12,'square',0.07); }
 function sComboLost(){ tone(300,170,0.3,'sine',0.1); }
@@ -207,6 +207,14 @@ function sSnuff(){ hissS(0.25,3000,400,0.25); }
 function sSnuffCandle(){ tone(190,85,0.16,'triangle',0.16); hissS(0.12,1800,500,0.12); }
 function sHowl(){ hissS(1.5,240,760,0.16); tone(88,62,1.1,'sine',0.05); }
 function sBell(){ tone(392,392,0.7,'sine',0.16); setTimeout(function(){tone(588,588,0.9,'sine',0.1);},140); }
+function sBlaze(){ tone(110,290,0.35,'triangle',0.2); hissS(0.3,500,2400,0.14); }
+function sHeart(){ tone(64,52,0.13,'sine',0.22); }
+var TOLL=[220,261.63,293.66,349.23,392];
+function sToll(){
+  var f = TOLL[randi(0,TOLL.length-1)] * Math.pow(2,-bandIdx/12);
+  tone(f,f*0.995,2.6,'sine',0.05);
+  if (Math.random()<0.35) tone(f*1.5,f*1.5,2.2,'sine',0.03);
+}
 function vib(p){ if (fxFull && navigator.vibrate) { try{ navigator.vibrate(p); }catch(e){} } }
 
 /* ---------- game state ---------- */
@@ -225,6 +233,7 @@ var flame=null;
 var sparks=0, heightM=0, nextMile=25, runBestY=0;
 var spineX=80, lastGenY=0, rungCount=0, dropTimer=0, wispTimer=0;
 var gust={phase:'none', dir:1, t:0}, gustTimer=10, bandIdx=0, zoomP=0, GLEAN=0;
+var queuedTap=null, kickY=0, wasBlaze=false, blazeCd=0, musicT=4, heartT=0, bestPassed=false;
 var titleT=0, newBest=false;
 var hintQueue=[], hintT=0;
 
@@ -295,6 +304,7 @@ function reset(){
   spineX=80; lastGenY=40; rungCount=0; dropTimer=0; wispTimer=0;
   trauma=0; flashA=0; freezeT=0; timeScale=1; slowT=0;
   gust.phase='none'; gustTimer=rand(9,14); bandIdx=0; zoomP=0; GLEAN=0;
+  queuedTap=null; kickY=0; wasBlaze=(K.fuelStart>=K.blazeAt); blazeCd=0; musicT=rand(3,7); heartT=0; bestPassed=false;
   var first = mkCandle(80, 40, 0);
   first.lit = true; first.burnMax = 8; first.burn = 8;
   candles.push(first);
@@ -395,6 +405,12 @@ function land(c){
     hint('combo',"FAST CHAINS BUILD HEAT,HEAT MULTIPLIES SPARKS");
   }
   flame.fuel = clamp(flame.fuel, 0, K.fuelMax);
+  kickY = 1.6; // tiny camera dip sells the landing weight
+  // consume a buffered mid-flight tap for seamless chaining
+  if (queuedTap && !c.dead && timeNow - queuedTap.t < 0.45){
+    var q = queuedTap; queuedTap = null;
+    tryJump(q.x, q.y);
+  } else queuedTap = null;
 }
 
 /* ---------- update ---------- */
@@ -469,6 +485,28 @@ function update(dt){
         sBell(); flash(P.text, 0.08);
       }
     }
+    // beat your best LIVE, not just on the death screen
+    if (!bestPassed && best>0 && heightM>best){
+      bestPassed = true;
+      popText(flame.x, flame.y-18, 'NEW BEST!', P.fire1, true);
+      flash(P.emberGold, 0.2); addTrauma(0.18); sMile(); vib(20);
+    }
+    // blaze threshold crossing: readable power-up moment
+    blazeCd = Math.max(0, blazeCd-dt);
+    var isBlaze = flame.fuel>=K.blazeAt;
+    if (isBlaze && !wasBlaze && blazeCd<=0){
+      blazeCd = 1.2; sBlaze();
+      parts.push({x:flame.x,y:flame.y,vx:0,vy:0,life:0.35,t:0,c:P.fire1,sz:2,g:1,grav:0,ring:1});
+    }
+    wasBlaze = isBlaze;
+    // low-fuel heartbeat
+    if (flame.fuel<22){
+      heartT -= dt;
+      if (heartT<=0){ heartT = 0.55 + flame.fuel/40; sHeart(); vib(4); }
+    }
+    // sparse ambient tolls
+    musicT -= dt;
+    if (musicT<=0){ musicT = rand(6,13); sToll(); }
     // deaths
     if (flame.fuel<=0) die('gutter');
     else if (flame.y >= darkY-2) die('dark');
@@ -561,6 +599,12 @@ function update(dt){
   }
   for (var i=wisps.length-1;i>=0;i--){
     var wsp=wisps[i];
+    // deep in the tower, wisps hunt — gently
+    if (heightM>250 && state==='play'){
+      wsp.vx += clamp(flame.x-wsp.x,-1,1)*7*dt;
+      wsp.vx = clamp(wsp.vx,-26,26);
+      wsp.y += clamp(flame.y-wsp.y,-1,1)*5*dt;
+    }
     wsp.x += wsp.vx*dt + (gust.phase==='blow'?gust.dir*10*dt:0);
     wsp.y += Math.sin(timeNow*2.2+wsp.ph)*8*dt;
     if (Math.random()<dt*10)
@@ -650,6 +694,7 @@ function update(dt){
   trauma = Math.max(0, trauma - dt*1.4);
   flashA = Math.max(0, flashA - dt*3.2);
   zoomP  = Math.max(0, zoomP - dt*5);
+  kickY  = Math.max(0, kickY - dt*14);
 
   // death sequencing
   if (state==='over'){
@@ -706,14 +751,15 @@ function sy(wy){ return (wy - camTop)|0; } // world→screen y
 
 /* ---------- render ---------- */
 function drawBG(){
-  var B = BANDS[state==='title'?0:bandIdx];
+  var bi = state==='title'?0:bandIdx;
+  var B = BANDS[bi];
   ctx.fillStyle = B.bg0; ctx.fillRect(0,0,W,H);
-  // parallax pillars & chains (deterministic from world y)
-  drawParallax(0.25, B.bg1);
-  drawParallax(0.55, B.bg2);
+  // parallax architecture (deterministic from world y, biome-flavoured)
+  drawParallax(0.25, B.bg1, bi);
+  drawParallax(0.55, B.bg2, bi);
 }
 function hash1(n){ var s=Math.sin(n*127.1)*43758.545; return s-Math.floor(s); }
-function drawParallax(f, col){
+function drawParallax(f, col, band){
   ctx.fillStyle = col;
   var off = camTop*f;
   var seg = 64;
@@ -721,17 +767,44 @@ function drawParallax(f, col){
   for (var s=top; s<=bot; s++){
     var yy = (s*seg - off)|0;
     var h1 = hash1(s*3+f*17);
+    if (band===3){
+      // the Hollow: almost nothing — lone drifting specks
+      if (h1>0.6) ctx.fillRect((14+((h1*997)%(W-28)))|0, yy+((h1*50)|0), 1, 2);
+      continue;
+    }
     // side pillars
     var pw = 4 + ((h1*5)|0);
+    if (band===1) pw += 2; // bone gallery: heavier ribs
     ctx.fillRect(0, yy, pw, seg);
     ctx.fillRect(W-pw, yy, pw, seg);
-    // hanging chain link
-    if (h1>0.45){
+    if (band===0 && h1>0.45){
+      // tallow cellars: hanging chains
       var cx2 = 14 + ((h1*1000)% (W-28));
       for (var k=0;k<5;k++) ctx.fillRect(cx2|0, yy+k*4, 1, 3);
     }
-    // broken arch
-    if (h1<0.22){
+    if (band===1){
+      // bone gallery: rib arcs jutting from the walls
+      var ry2 = yy + ((h1*44)|0);
+      for (var k=0;k<4;k++){
+        ctx.fillRect(pw+k*3, ry2+k, 3, 2);
+        ctx.fillRect(W-pw-3-k*3, ry2+k, 3, 2);
+      }
+      // knobbed pillar caps
+      ctx.fillRect(0, yy+30, pw+2, 3);
+      ctx.fillRect(W-pw-2, yy+30, pw+2, 3);
+    }
+    if (band===2){
+      // rust chapel: tall dark window slits + long chains
+      var wx2 = (30 + ((h1*983)%(W-60)))|0;
+      ctx.fillRect(wx2, yy+8, 2, 16);
+      ctx.fillRect(wx2+1, yy+4, 1, 4);
+      if (h1>0.5){
+        var cx3 = (20 + ((h1*761)%(W-40)))|0;
+        for (var k=0;k<9;k++) ctx.fillRect(cx3, yy+k*4, 1, 3);
+      }
+    }
+    if (band!==2 && h1<0.22){
+      // broken arch
       ctx.fillRect(0, yy+((h1*90)|0), 26, 3);
       ctx.fillRect(W-26, yy+((h1*90)|0), 26, 3);
     }
@@ -741,10 +814,11 @@ function drawParallax(f, col){
 function drawCandle(c){
   var h = candleH(c), top = candleTop(c), Y=sy(c.y), T=sy(top);
   if (Y<-30 || T>H+30) return;
-  // ledge
-  ctx.fillStyle = P.stoneLo; ctx.fillRect(c.x-7, Y+2, 14, 3);
-  ctx.fillStyle = P.stone;   ctx.fillRect(c.x-6, Y, 12, 2);
-  ctx.fillStyle = P.stoneHi; ctx.fillRect(c.x-6, Y, 12, 1);
+  // ledge (stone takes the biome's tint)
+  var B = BANDS[bandIdx];
+  ctx.fillStyle = B.stLo; ctx.fillRect(c.x-7, Y+2, 14, 3);
+  ctx.fillStyle = B.st;   ctx.fillRect(c.x-6, Y, 12, 2);
+  ctx.fillStyle = B.stHi; ctx.fillRect(c.x-6, Y, 12, 1);
   if (c.type===2){ // brass lantern
     ctx.fillStyle=P.brassDk; ctx.fillRect(c.x-4, T, 8, h-2);
     ctx.fillStyle=P.brass;   ctx.fillRect(c.x-4, T, 8, 1);
@@ -756,6 +830,8 @@ function drawCandle(c){
   }
   var wax = c.lit ? P.waxWarm : (c.dead ? P.waxLo : P.waxCold);
   var waxHi = c.lit ? P.waxHi : (c.dead ? P.waxCold : P.waxColdHi);
+  // dying wick: the candle itself flashes a warning
+  if (c.lit && c.burn<1.2 && ((timeNow*6|0)%2===0)){ wax = P.fire3; waxHi = P.fire2; }
   var wdt = c.type===1 ? 5 : 7;
   if (c.dead){
     // melted pool
@@ -784,6 +860,7 @@ function drawFlamePlayer(){
   var fx=flame.x|0, fy=sy(flame.y);
   var fuelF = clamp(flame.fuel/K.fuelMax, 0, 1);
   var r = 2 + fuelF*3.2;                    // body radius
+  if (flame.st==='perch' && !flame.gutter) r *= 1 + Math.sin(timeNow*2.6)*0.05; // idle breathing
   var sq = flame.sq;
   var rw = r/Math.sqrt(sq), rh = r*sq;      // squash & stretch, volume-ish conserved
   var flick = Math.sin(timeNow*22)*0.6 + Math.sin(timeNow*9)*0.5;
@@ -889,6 +966,22 @@ function drawDark(){
     var yy = dY - 6 - Math.sin(x*0.5+timeNow*3)*3;
     if (Math.sin(x*13.7+timeNow*5)>0.6) ctx.fillRect(x, yy|0, 1, 1);
   }
+  // when close, the dark reaches for the flame
+  if (state==='play'){
+    var gap2 = darkY - flame.y;
+    if (gap2 < 85){
+      var reach = (85-gap2)*0.4;
+      for (var tn=0; tn<2; tn++){
+        var tx2 = (flame.x + (tn===0?-9:9) + Math.sin(timeNow*(2.1+tn)+tn*3)*5)|0;
+        var th2 = (reach*(0.7+0.3*Math.sin(timeNow*3+tn*2)))|0;
+        for (var k2=0;k2<th2;k2+=2){
+          var wob2 = (Math.sin(timeNow*4+k2*0.5+tn)*2)|0;
+          ctx.fillStyle = k2>th2-4 ? P.darkTendril : P.void_;
+          ctx.fillRect(tx2+wob2, (dY-8-k2)|0, 2, 2);
+        }
+      }
+    }
+  }
   // rising void particles
   for (var i=0;i<4;i++){
     var vx2 = (hash1(i*7+((timeNow*2)|0))*W)|0;
@@ -916,7 +1009,10 @@ function drawHUD(){
   // combo
   if (flame.combo>=2){
     var frac = clamp(1-flame.sinceLand/K.comboWindow,0,1);
-    drawText('x'+flame.combo, W-5, 5, 2, frac<0.3&&((timeNow*8|0)%2===0)?P.fire3:P.emberGold, 'r');
+    var hotCol = P.emberGold;
+    if (frac<0.3 && ((timeNow*8|0)%2===0)) hotCol = P.fire3;          // expiring
+    else if (flame.combo>=10) hotCol = ((timeNow*10|0)%2===0)?P.fireCore:P.fire1; // white-hot
+    drawText('x'+flame.combo, W-5, 5, 2, hotCol, 'r');
     ctx.fillStyle=P.stoneLo; ctx.fillRect(W-25,17,20,2);
     ctx.fillStyle=P.fire2; ctx.fillRect(W-25,17,(20*frac)|0,2);
   }
@@ -1148,9 +1244,11 @@ function drawOver(){
   var cx=W>>1, ty=(H*0.2)|0;
   var msg = overCause==='dark' ? 'THE DARK TOOK YOU' : 'YOUR FLAME GUTTERED OUT';
   drawText(msg, cx, ty, 1, P.textDim, 'c');
-  drawText(heightM+'m', cx, ty+14, 4, P.text, 'c');
-  // sparks
-  drawText('SPARKS '+sparks, cx, ty+42, 1, P.emberGold, 'c');
+  // numbers count up — earn the stat
+  var p1 = clamp((overT-0.9)/0.8, 0, 1); p1 = 1-Math.pow(1-p1,3);
+  var p2 = clamp((overT-1.2)/0.8, 0, 1); p2 = 1-Math.pow(1-p2,3);
+  drawText(Math.round(heightM*p1)+'m', cx, ty+14, 4, P.text, 'c');
+  drawText('SPARKS '+Math.round(sparks*p2), cx, ty+42, 1, P.emberGold, 'c');
   if (newBest){
     ctx.globalAlpha = 0.6+Math.sin(timeNow*6)*0.4;
     drawText('NEW BEST!', cx, ty+54, 2, P.fire1, 'c');
@@ -1174,7 +1272,7 @@ function render(){
     sx=(Math.sin(timeNow*91)*sh)|0; sy2=(Math.sin(timeNow*137)*sh)|0;
   }
   ctx.save();
-  ctx.translate(sx,sy2);
+  ctx.translate(sx, sy2 + (fxFull ? Math.round(kickY) : 0));
   if (zoomP>0 && fxFull){
     var z = 1 + zoomP*zoomP*0.05;
     ctx.translate(W>>1,H>>1); ctx.scale(z,z); ctx.translate(-(W>>1),-(H>>1));
@@ -1227,8 +1325,9 @@ canvas.addEventListener('pointerdown', function(e){
     if (overT>1.0){ sUI(); reset(); state='play'; }
     return;
   }
-  // play: tap → jump (convert to world coords)
-  tryJump(x, y + camTop);
+  // play: tap → jump (convert to world coords); mid-flight taps buffer the next leap
+  if (flame.st==='fly') queuedTap = {x:x, y:y+camTop, t:timeNow};
+  else tryJump(x, y + camTop);
 }, {passive:false});
 window.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 document.addEventListener('visibilitychange', function(){
@@ -1256,6 +1355,11 @@ function loop(ts){
   render();
 }
 requestAnimationFrame(loop);
+
+/* offline support when hosted (no-op on file://) */
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
+  navigator.serviceWorker.register('sw.js').catch(function(){});
+}
 
 /* debug hooks for automated smoke tests */
 window.WICK = {

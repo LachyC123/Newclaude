@@ -42,4 +42,6 @@ open index.html
 
 Saved locally: best height, sound/FX settings, seen tutorials (`localStorage`).
 
-Installable as a PWA (manifest + icon included) when served over HTTPS — e.g. GitHub Pages.
+Installable as a PWA (manifest + icon + offline service worker) when served over HTTPS — e.g. GitHub Pages. Once installed it plays with no connection.
+
+Feel details worth knowing: taps during flight are buffered into the next leap (chain by rhythm, not by waiting), beating your best pops **NEW BEST!** live mid-run, dying wicks flash a warning, and the dark visibly reaches for you when it's close.
